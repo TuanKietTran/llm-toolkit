@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gorouter</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#14171f;--mute:#667085;--line:#e3e6ec;--acc:#2f5bea;--ok:#13795b;--bad:#b42318;--warn:#a15c07}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1015;--card:#171a22;--fg:#e8eaf0;--mute:#8b93a7;--line:#2a2f3c;--acc:#7b9bff;--ok:#4cc9a0;--bad:#ff7b72;--warn:#e3a73c}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif}
+header{display:flex;gap:16px;align-items:center;padding:12px 24px;border-bottom:1px solid var(--line);background:var(--card);flex-wrap:wrap}
+h1{font-size:16px;margin:0}nav{display:flex;gap:4px;flex:1}
+nav button,.btn{border:1px solid var(--line);background:var(--card);color:var(--fg);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+nav button.on,.btn.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+main{max-width:1100px;margin:0 auto;padding:24px 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px;overflow-x:auto}
+.stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}.stat span{color:var(--mute);font-size:12px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--mute);font-weight:500;font-size:12px}th.n{text-align:right}td.n{text-align:right;font-variant-numeric:tabular-nums}
+.pill{padding:2px 8px;border-radius:99px;font-size:12px;border:1px solid var(--line)}.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+textarea{width:100%;min-height:420px;font:12.5px/1.5 ui-monospace,monospace;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:12px}
+input{font:inherit;padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.mute{color:var(--mute)}
+pre{background:var(--bg);padding:12px;border-radius:8px;overflow:auto;white-space:pre-wrap}
+h2{font-size:14px;margin:0 0 12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>gorouter</h1>
+  <nav id="nav"></nav>
+  <form onsubmit="return false" autocomplete="off"><input id="key" type="password" placeholder="API key" size="18" autocomplete="off"></form>
+</header>
+<main id="main"></main>
+<script>
+const $ = s => document.querySelector(s);
+const fmt = n => Number(n||0).toLocaleString();
+const key = $('#key');
+try { key.value = localStorage.getItem('gr_key') || ''; } catch {}
+key.onchange = () => { try { localStorage.setItem('gr_key', key.value); } catch {} show(tab); };
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...(opts.headers||{}), Authorization: 'Bearer ' + key.value } });
+  const text = await r.text(); let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok) throw new Error((data && data.error && data.error.message) || r.status + ' ' + text);
+  return data;
+}
+const tabs = { overview: 'Overview', providers: 'Providers & OAuth', config: 'Config', playground: 'Playground' };
+let devTimer;
+let tab = (location.hash.slice(1) in { overview:1, providers:1, config:1, playground:1 }) ? location.hash.slice(1) : 'overview', timer;
+$('#nav').innerHTML = Object.entries(tabs).map(([k,v]) => `<button data-t="${k}">${v}</button>`).join('');
+$('#nav').onclick = e => e.target.dataset.t && show(e.target.dataset.t);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fail = e => `<div class="card bad">${esc(e.message)}</div>`;
+
+async function show(t) {
+  tab = t; clearInterval(timer); clearInterval(devTimer);
+  try { history.replaceState(null, '', '#' + t); } catch {}
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
+  const render = { overview, providers, config, playground }[t];
+  try { await render(); } catch (e) { $('#main').innerHTML = fail(e); }
+  if (t === 'overview' || t === 'providers') timer = setInterval(() => render().catch(()=>{}), 5000);
+}
+
+async function overview() {
+  const [u, st] = await Promise.all([api('/admin/usage'), api('/admin/status')]);
+  if (tab !== 'overview') return;
+  const rows = Object.entries(u).sort((a,b) => b[1].requests - a[1].requests);
+  const sum = f => rows.reduce((a,[,s]) => a + f(s), 0);
+  const req = sum(s => s.requests), err = sum(s => s.errors);
+  $('#main').innerHTML = `
+  <div class="grid">
+    <div class="card stat"><b>${fmt(req)}</b><span>requests</span></div>
+    <div class="card stat"><b>${req ? (100*err/req).toFixed(1) : 0}%</b><span>error rate</span></div>
+    <div class="card stat"><b>${fmt(sum(s => s.in_tokens))}</b><span>input tokens</span></div>
+    <div class="card stat"><b>${fmt(sum(s => s.out_tokens))}</b><span>output tokens</span></div>
+    <div class="card stat"><b>$${sum(s => s.cost_usd).toFixed(4)}</b><span>est. cost</span></div>
+  </div>
+  <div class="card"><h2>Usage by target</h2><table><tr><th>Target</th><th class=n>Requests</th><th class=n>Errors</th><th class=n>In</th><th class=n>Out</th><th class=n>Cost</th><th class=n>Avg latency</th><th>Last used</th></tr>
+  ${rows.map(([k,s]) => `<tr><td>${esc(k)}</td><td class=n>${fmt(s.requests)}</td><td class="n ${s.errors?'bad':''}">${fmt(s.errors)}</td><td class=n>${fmt(s.in_tokens)}</td><td class=n>${fmt(s.out_tokens)}</td><td class=n>$${s.cost_usd.toFixed(4)}</td><td class=n>${s.requests ? Math.round(s.total_latency_ms/s.requests) : 0} ms</td><td class=mute>${new Date(s.last_used_at).toLocaleString()}</td></tr>`).join('') || '<tr><td colspan=8 class=mute>No traffic yet</td></tr>'}</table></div>
+  <div class="card"><h2>Active cooldowns</h2>${st.cooldowns && st.cooldowns.length ? `<table><tr><th>Key</th><th class=n>Failures</th><th class=n>Remaining</th></tr>${st.cooldowns.map(c => `<tr><td>${esc(c.key)}</td><td class=n>${c.failures}</td><td class="n warn">${c.remaining_sec}s</td></tr>`).join('')}</table>` : '<span class="mute ok">All targets healthy</span>'}</div>
+  <div class="card"><h2>Account quotas</h2>${st.quotas && st.quotas.length ? `<table><tr><th>Account</th><th>Window</th><th class=n>Requests</th><th class=n>Tokens</th><th>Resets</th><th></th></tr>${st.quotas.map(q => `<tr><td>${esc(q.account)}</td><td>${esc(q.window)}</td><td class=n>${fmt(q.requests)}${q.max_requests ? ' / ' + fmt(q.max_requests) : ''}</td><td class=n>${fmt(q.tokens)}${q.max_tokens ? ' / ' + fmt(q.max_tokens) : ''}</td><td class=mute>${q.requests || q.tokens ? new Date(q.resets_at).toLocaleString() : '—'}</td><td>${q.exhausted ? '<span class="pill bad">exhausted</span>' : ''}</td></tr>`).join('')}</table>` : '<span class="mute">No quotas configured</span>'}</div>
+  ${st.token_saver ? `<div class="card stat"><b>${fmt(st.token_saver.saved_chars)}</b><span>characters saved by token saver ${st.token_saver.enabled ? '' : '(disabled)'}</span></div>` : ''}
+  <div class="card"><h2>Combos</h2><table><tr><th>Name</th><th>Strategy</th><th>Order</th></tr>${(st.combos||[]).map(c => `<tr><td>${esc(c.name)}</td><td>${c.strategy}</td><td>${c.models.map(esc).join(' → ')}</td></tr>`).join('') || '<tr><td colspan=3 class=mute>None</td></tr>'}</table></div>`;
+}
+
+async function providers() {
+  const st = await api('/admin/status');
+  if (tab !== 'providers') return;
+  const rows = st.providers.flatMap(p => (p.accounts || [{id:'default'}]).map((a, i) => ({p, a, first: i === 0})));
+  $('#main').innerHTML = `<div class="card"><h2>Providers &amp; accounts</h2><table><tr><th>Provider</th><th>Type</th><th class=n>Tier</th><th>Models</th><th>Account</th><th>Auth</th><th></th></tr>
+  ${rows.map(({p, a, first}) => `<tr><td>${first ? esc(p.id) : ''}</td><td>${first ? p.type : ''}</td><td class=n>${first ? p.tier : ''}</td><td>${first ? (p.models||[]).map(esc).join(', ') : ''}</td>
+  <td>${esc(a.id)}${a.disabled ? ' <span class="pill warn">disabled</span>' : ''}</td>
+  <td>${p.oauth ? (a.connected ? `<span class="pill ok">connected${a.expires_at ? ' · expires ' + new Date(a.expires_at).toLocaleString() : ''}</span>` : '<span class="pill warn">not connected</span>') : '<span class="mute">API key</span>'}</td>
+  <td>${p.oauth ? `<button class="btn primary" data-c="${esc(p.id)}" data-a="${esc(a.id)}">${a.connected ? 'Reconnect' : 'Connect'}</button>
+     <button class="btn" data-dev="${esc(p.id)}" data-a="${esc(a.id)}">Device code</button>
+     ${a.connected ? `<button class="btn" data-d="${esc(p.id)}" data-a="${esc(a.id)}">Disconnect</button>` : ''}` : ''}</td></tr>`).join('')}</table></div>
+  <div id="device"></div>
+  <p class="mute">OAuth redirect URI to register with the provider: <code>${location.origin}/oauth/callback</code> (override with <code>public_url</code> in config).</p>`;
+  $('#main').onclick = async e => {
+    const d = e.target.dataset, q = '?account=' + encodeURIComponent(d.a || '');
+    try {
+      if (d.c) { const r = await api(`/admin/oauth/${d.c}/start${q}`, { method: 'POST' }); window.open(r.url, '_blank'); }
+      if (d.d) { await api(`/admin/oauth/${d.d}${q}`, { method: 'DELETE' }); providers(); }
+      if (d.dev) {
+        clearInterval(timer);
+        const f = await api(`/admin/oauth/${d.dev}/device${q}`, { method: 'POST' });
+        $('#device').innerHTML = `<div class="card"><h2>Device login: ${esc(d.dev)} / ${esc(d.a)}</h2>
+          <p>Open <a href="${esc(f.verification_uri_complete || f.verification_uri)}" target="_blank" rel="noopener">${esc(f.verification_uri)}</a> and enter code <b style="font-size:20px">${esc(f.user_code)}</b></p><p id="dstate" class="mute">Waiting for approval…</p></div>`;
+        devTimer = setInterval(async () => {
+          const s2 = await api(`/admin/oauth/${d.dev}/device${q}`).catch(() => ({}));
+          if (s2.state === 'connected') { clearInterval(devTimer); providers(); }
+          if (s2.state === 'error') { clearInterval(devTimer); $('#dstate').className = 'bad'; $('#dstate').textContent = s2.error; }
+        }, 2000);
+      }
+    } catch (err) { alert(err.message); }
+  };
+}
+
+async function config() {
+  const cfg = await api('/admin/config');
+  if (tab !== 'config') return;
+  $('#main').innerHTML = `<div class="card"><div class="row"><button class="btn primary" id="save">Save &amp; apply</button><span id="msg" class="mute">Changes are validated, stored in SQLite and hot-reloaded without a restart.</span></div>
+  <textarea id="cfg" spellcheck="false"></textarea></div>`;
+  $('#cfg').value = JSON.stringify(cfg, null, 2);
+  $('#save').onclick = async () => {
+    try { const r = await api('/admin/config', { method: 'PUT', body: $('#cfg').value }); $('#msg').className = 'ok'; $('#msg').textContent = `Applied: ${r.providers} providers, ${r.combos} combos`; }
+    catch (e) { $('#msg').className = 'bad'; $('#msg').textContent = e.message; }
+  };
+}
+
+async function playground() {
+  const st = await api('/admin/status');
+  if (tab !== 'playground') return;
+  const names = [...st.providers.flatMap(p => (p.models||[]).map(m => p.id + '/' + m)), ...(st.combos||[]).map(c => c.name), ...Object.keys(st.aliases||{})];
+  $('#main').innerHTML = `<div class="card"><div class="row"><input id="model" list="models" placeholder="model or combo" size="30" value="${esc(names[0]||'')}"><datalist id="models">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+  <input id="prompt" placeholder="Say something" size="50" value="Say hi in five words."><button class="btn primary" id="go">Send</button></div><pre id="out" class="mute">Response appears here.</pre></div>`;
+  $('#go').onclick = async () => {
+    $('#out').textContent = '…';
+    const r = await fetch('/v1/chat/completions', { method: 'POST', headers: { Authorization: 'Bearer ' + key.value, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: $('#model').value, messages: [{ role: 'user', content: $('#prompt').value }] }) });
+    const j = await r.json().catch(() => ({}));
+    $('#out').textContent = `target: ${r.headers.get('X-Gorouter-Target') || '-'}  status: ${r.status}\n\n` + (j.choices ? j.choices[0].message.content : JSON.stringify(j, null, 2));
+  };
+}
+window.addEventListener('hashchange', () => { const t = location.hash.slice(1); if (tabs[t] && t !== tab) show(t); });
+show(tab);
+</script>
+</body>
+</html>

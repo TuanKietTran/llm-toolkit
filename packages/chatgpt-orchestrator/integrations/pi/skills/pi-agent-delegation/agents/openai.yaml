@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pi Agent Delegation"
+  short_description: "Delegate focused work to local Pi agents"
+  default_prompt: "Use $pi-agent-delegation to delegate a focused task to a local Pi agent."

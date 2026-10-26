@@ -1,0 +1,13 @@
+{
+  "name": "pi-extension-chatgpt-orchestrator",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "pi extension: bridges the chatgpt-orchestrator MCP server's tools into pi as native tools.",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "pi": {
+    "extensions": ["./index.ts", "./local-model-harness.ts"]
+  }
+}

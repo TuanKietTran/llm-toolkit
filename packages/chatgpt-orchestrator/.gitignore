@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets & session state — NEVER commit
+.env
+secrets/
+profiles/
+storage_state/
+*.storage_state.json
+
+# Runtime artifacts
+logs/
+snapshots/
+*.log
+
+# Node (integrations/pi)
+node_modules/

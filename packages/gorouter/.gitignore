@@ -1,0 +1,9 @@
+data/
+config.json
+/gorouter
+e2e/node_modules/
+.DS_Store
+
+# e2e build artifacts
+/.dev/
+/data-e2e/

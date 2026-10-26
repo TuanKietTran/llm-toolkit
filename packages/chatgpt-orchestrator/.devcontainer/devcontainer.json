@@ -1,0 +1,11 @@
+{
+  "name": "chatgpt-orchestrator",
+  "image": "python:3.12-slim",
+  // xvfb + xauth: this project launches Chromium headed (headless: false in
+  // config.py, deliberately -- harder for bot-detection to flag than headless).
+  // A container has no display server, so browser launches fail with
+  // "Missing X server or $DISPLAY" without these + running commands through
+  // `xvfb-run -a`. Do not "fix" this by setting headless: true -- see README.
+  "postCreateCommand": "apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git xvfb xauth && curl -LsSf https://astral.sh/uv/install.sh | sh && ~/.local/bin/uv sync --extra all && ~/.local/bin/uv run patchright install --with-deps chromium",
+  "remoteUser": "root"
+}

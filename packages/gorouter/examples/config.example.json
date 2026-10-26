@@ -1,0 +1,135 @@
+{
+  "listen": ":20128",
+  "data_dir": "./data",
+  "api_keys": [
+    "sk-gorouter-change-me"
+  ],
+  "providers": [
+    {
+      "id": "cc",
+      "type": "anthropic",
+      "api_key": "env:ANTHROPIC_API_KEY",
+      "tier": 1,
+      "models": [
+        "claude-opus-4-7",
+        "claude-sonnet-4-5"
+      ],
+      "price_in": 15,
+      "price_out": 75,
+      "accounts": [
+        {
+          "id": "personal",
+          "api_key": "env:ANTHROPIC_API_KEY"
+        },
+        {
+          "id": "work",
+          "api_key": "env:ANTHROPIC_API_KEY_2"
+        }
+      ],
+      "account_strategy": "fallback",
+      "quotas": [
+        {
+          "window": "5h",
+          "max_requests": 200
+        },
+        {
+          "window": "168h",
+          "max_tokens": 5000000
+        }
+      ]
+    },
+    {
+      "id": "glm",
+      "type": "openai",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "api_key": "env:GLM_API_KEY",
+      "tier": 2,
+      "models": [
+        "glm-5.1"
+      ],
+      "price_in": 0.6,
+      "price_out": 2.2
+    },
+    {
+      "id": "local",
+      "type": "openai",
+      "base_url": "http://localhost:11434/v1",
+      "tier": 3,
+      "models": [
+        "llama3.1"
+      ]
+    },
+    {
+      "id": "sub",
+      "type": "openai",
+      "base_url": "https://api.example.com/v1",
+      "tier": 1,
+      "models": [
+        "model-x"
+      ],
+      "oauth": {
+        "auth_url": "https://idp.example.com/oauth/authorize",
+        "token_url": "https://idp.example.com/oauth/token",
+        "client_id": "YOUR_CLIENT_ID",
+        "client_secret": "env:SUB_CLIENT_SECRET",
+        "scopes": [
+          "api"
+        ]
+      }
+    },
+    {
+      "id": "gem",
+      "type": "gemini",
+      "api_key": "env:GEMINI_API_KEY",
+      "tier": 2,
+      "models": [
+        "gemini-2.5-flash"
+      ]
+    },
+    {
+      "id": "vertex",
+      "type": "vertex",
+      "project": "my-gcp-project",
+      "location": "us-central1",
+      "service_account": "env:GOOGLE_SA_JSON",
+      "tier": 2,
+      "models": [
+        "gemini-2.5-pro"
+      ]
+    }
+  ],
+  "combos": [
+    {
+      "name": "premium-coding",
+      "strategy": "fallback",
+      "models": [
+        "cc/claude-opus-4-7",
+        "glm/glm-5.1",
+        "local/llama3.1"
+      ]
+    },
+    {
+      "name": "cheapest-first",
+      "strategy": "tier",
+      "models": [
+        "local/llama3.1",
+        "glm/glm-5.1",
+        "cc/claude-sonnet-4-5"
+      ]
+    }
+  ],
+  "aliases": {
+    "default": "premium-coding"
+  },
+  "cooldown": {
+    "base_sec": 5,
+    "max_sec": 300
+  },
+  "public_url": "http://localhost:20128",
+  "token_saver": {
+    "enabled": true,
+    "max_tool_chars": 8000,
+    "trim_diff_context": true,
+    "cache_control": true
+  }
+}

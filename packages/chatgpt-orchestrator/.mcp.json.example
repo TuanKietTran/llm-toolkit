@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "chatgpt-orchestrator": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "orchestrator", "serve-mcp", "--transport", "stdio"],
+      "cwd": "/path/to/chatgpt-orchestrator",
+      "env": {}
+    }
+  }
+}

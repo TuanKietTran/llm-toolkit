@@ -1,0 +1,43 @@
+# chatgpt-orchestrator configuration.
+# Values here are defaults; anything prefixed ORCH_ in the environment overrides them.
+
+[browser]
+driver = "patchright"        # "patchright" (stealth-patched) or "playwright"
+channel = "chrome"           # real Chrome channel beats bundled Chromium for TLS fingerprint
+headless = false             # headed (or headless+xvfb) with a real GPU avoids WebGL tells
+nav_timeout_ms = 45000
+base_url = "https://chatgpt.com/"
+
+[network]
+# The operator brings the VPN up outside this process. If required, browser launch fails closed
+# unless this exact host interface exists and is up (examples: wg0, tun0, tailscale0).
+vpn_required = false
+vpn_interface = ""
+
+[scaling]
+min_warm = 1                 # keep this many idle contexts hot
+max_contexts = 8             # hard ceiling on live contexts
+per_context_mem_mb = 250     # estimate used for RAM-aware scaling
+mem_safety_factor = 1.3
+idle_ttl_seconds = 180       # close idle contexts older than this (above min_warm)
+scale_tick_seconds = 2.0
+scale_action_cooldown_seconds = 5.0
+max_create_per_tick = 2
+ema_alpha = 0.4
+max_queue = 128              # backpressure: reject with retry-after beyond this
+
+[agent]
+max_steps = 6                # worker-side ReAct cap (only used when a worker is equipped with tools)
+ask_timeout_seconds = 120
+repair_attempts = 2          # bounded nudges when a worker breaks the tool-call JSON contract
+
+[behavior]
+# Human-like pacing to reduce per-session flagging.
+keystroke_min_ms = 60
+keystroke_max_ms = 220
+think_min_ms = 400
+think_max_ms = 1800
+min_gap_between_messages_ms = 2500
+
+# Accounts and inward MCP servers are supplied via env (see .env.example) so secrets stay
+# out of version control. See ORCH_ACCOUNTS and ORCH_INWARD_MCP_SERVERS.

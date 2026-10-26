@@ -1,0 +1,23 @@
+{
+  "listen": ":20128",
+  "data_dir": "./data-e2e",
+  "api_keys": ["sk-gorouter-e2e"],
+  "providers": [
+    {
+      "id": "mock",
+      "type": "openai",
+      "base_url": "http://127.0.0.1:20129/v1",
+      "api_key": "sk-mock-e2e",
+      "tier": 1,
+      "models": ["mock-model"],
+      "price_in": 0,
+      "price_out": 0
+    }
+  ],
+  "combos": [
+    {"name": "mock-model", "strategy": "fallback", "models": ["mock/mock-model"]}
+  ],
+  "aliases": {"default": "mock-model"},
+  "cooldown": {"base_sec": 1, "max_sec": 5},
+  "public_url": "http://127.0.0.1:20128"
+}

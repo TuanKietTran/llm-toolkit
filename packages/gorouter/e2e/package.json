@@ -1,0 +1,1 @@
+{ "name": "gorouter-e2e", "private": true, "type": "module", "scripts": { "test": "node dashboard.e2e.js" }, "devDependencies": { "puppeteer-core": "^24.0.0" } }

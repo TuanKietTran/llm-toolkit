@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>stub chatgpt</title>
+</head>
+<body>
+  <div id="prompt-textarea" contenteditable="true" data-testid="prompt-textarea"></div>
+  <button data-testid="send-button" id="send-btn" aria-label="Send" onclick="onSend()">Send</button>
+  <button
+    data-testid="stop-button"
+    id="stop-btn"
+    aria-label="Stop"
+    style="display: none"
+    onclick="onStop()"
+  >
+    Stop
+  </button>
+  <div id="thread"></div>
+  <script>
+    // Mimics just enough of chatgpt.com's DOM (selectors.py) to exercise the real driver:
+    // a contenteditable composer, a send<->stop button flip, and an incrementally-streamed
+    // assistant message that settles after a short delay.
+    let replyCounter = 0;
+
+    function onSend() {
+      document.getElementById("send-btn").style.display = "none";
+      document.getElementById("stop-btn").style.display = "inline";
+      replyCounter += 1;
+
+      const thread = document.getElementById("thread");
+      const msg = document.createElement("div");
+      msg.setAttribute("data-message-author-role", "assistant");
+      const content = document.createElement("div");
+      content.className = "markdown";
+      msg.appendChild(content);
+      thread.appendChild(msg);
+
+      const finalText = "Hello from stub reply #" + replyCounter;
+      const steps = [finalText.slice(0, 5), finalText.slice(0, 12), finalText];
+      let i = 0;
+
+      function step() {
+        if (i < steps.length) {
+          content.innerText = steps[i];
+          i += 1;
+          setTimeout(step, 120);
+        } else {
+          document.getElementById("stop-btn").style.display = "none";
+          document.getElementById("send-btn").style.display = "inline";
+        }
+      }
+      setTimeout(step, 80);
+    }
+
+    function onStop() {}
+  </script>
+</body>
+</html>

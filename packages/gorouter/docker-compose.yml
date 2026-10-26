@@ -1,0 +1,13 @@
+services:
+  gorouter:
+    build: .
+    ports: ["20128:20128"]
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GLM_API_KEY: ${GLM_API_KEY:-}
+    volumes:
+      - ./config.json:/config/config.json:ro
+      - gorouter-data:/data
+    restart: unless-stopped
+volumes:
+  gorouter-data:
