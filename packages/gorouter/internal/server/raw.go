@@ -37,10 +37,10 @@ func (s *Server) rawRoutes(mux *http.ServeMux) {
 type bodyBuilder func(model string) (io.Reader, string, error)
 
 func (s *Server) readRaw(w http.ResponseWriter, r *http.Request) (model string, build bodyBuilder, err error) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
+	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody())
 	ct, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if strings.HasPrefix(ct, "multipart/") {
-		if err := r.ParseMultipartForm(maxBody); err != nil {
+		if err := r.ParseMultipartForm(s.maxBody()); err != nil {
 			return "", nil, err
 		}
 		_ = params
@@ -99,6 +99,10 @@ func (s *Server) readRaw(w http.ResponseWriter, r *http.Request) (model string, 
 
 func (s *Server) raw(w http.ResponseWriter, r *http.Request, path string) {
 	model, build, err := s.readRaw(w, r)
+	if isTooLarge(err) {
+		writeError(w, 413, "request body is too large", fmtOpenAI)
+		return
+	}
 	if err != nil {
 		writeError(w, 400, "invalid request: "+err.Error(), fmtOpenAI)
 		return

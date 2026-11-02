@@ -94,6 +94,14 @@ func (s *Server) buildRouter(cfg *config.Config, prev *router.Router) *router.Ro
 	return router.New(cfg, ts, prev)
 }
 
+// maxBody is the configured request body limit (max_request_bytes).
+func (s *Server) maxBody() int64 {
+	if n := s.cfg().MaxRequestBytes; n > 0 {
+		return n
+	}
+	return maxBody
+}
+
 func (s *Server) cfg() *config.Config { return s.st.Load().cfg }
 func (s *Server) rt() *router.Router  { return s.st.Load().rt }
 
@@ -109,18 +117,11 @@ func (s *Server) Handler() http.Handler {
 		writeJSON(w, 200, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /v1/models", s.auth(s.models))
+	mux.HandleFunc("GET /v1/models/{model...}", s.auth(s.model))
 	mux.HandleFunc("POST /v1/chat/completions", s.auth(func(w http.ResponseWriter, r *http.Request) { s.chat(w, r, fmtOpenAI) }))
 	mux.HandleFunc("POST /v1/messages", s.auth(func(w http.ResponseWriter, r *http.Request) { s.chat(w, r, fmtAnthropic) }))
 	s.adminRoutes(mux)
 	return logging(mux)
-}
-
-func logging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
-	})
 }
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
@@ -137,6 +138,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 				}
 			}
 			if !ok {
+				w.Header().Set("WWW-Authenticate", "Bearer")
 				writeError(w, 401, "invalid api key", clientFormat(r))
 				return
 			}
@@ -160,8 +162,24 @@ func (s *Server) models(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 }
 
+func (s *Server) model(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("model")
+	for _, m := range s.rt().Models() {
+		if m == id {
+			writeJSON(w, 200, map[string]any{"id": m, "object": "model", "owned_by": "gorouter"})
+			return
+		}
+	}
+	writeJSON(w, 404, map[string]any{"error": map[string]any{
+		"message": "model not found", "type": "gorouter_error", "code": "model_not_found", "param": "model"}})
+}
+
 func (s *Server) chat(w http.ResponseWriter, r *http.Request, format string) {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxBody()))
+	if isTooLarge(err) {
+		writeError(w, 413, "request body is too large", format)
+		return
+	}
 	if err != nil {
 		writeError(w, 400, "cannot read body: "+err.Error(), format)
 		return
@@ -205,7 +223,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request, format string) {
 	res, fail := s.rt().Execute(r.Context(), body, model)
 	if fail != nil {
 		if fail.Status != 499 {
-			log.Printf("route %q failed: %s attempts=%+v", model, fail.Message, fail.Attempts)
+			log.Printf("route %q failed: id=%s %s attempts=%+v", model, requestID(r), fail.Message, fail.Attempts)
 		}
 		s.recordFailures(fail, time.Since(start))
 		writeError(w, fail.Status, fail.Message, format)

@@ -20,6 +20,8 @@ type Config struct {
 	Aliases   map[string]string `json:"aliases"`
 	Cooldown  Cooldown          `json:"cooldown"`
 	Saver     TokenSaver        `json:"token_saver"`
+	// MaxRequestBytes caps request bodies (413 beyond it). 0 = default 32 MiB.
+	MaxRequestBytes int64 `json:"max_request_bytes"`
 
 	raw json.RawMessage // original document, kept for the admin API
 }
