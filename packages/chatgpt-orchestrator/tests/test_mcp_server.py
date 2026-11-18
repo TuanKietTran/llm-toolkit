@@ -30,14 +30,18 @@ async def test_lists_all_tools_and_resources(fake_core):
             "ask_batch",
             "close_worker",
             "converse",
+            "jobsite_apply",
+            "jobsite_read_context",
+            "jobsite_search",
             "list_workers",
+            "read_context",
             "spawn_worker",
             "write_code",
             "write_code_batch",
         ]
         resources = await client.list_resources()
         uris = sorted(str(r.uri) for r in resources.resources)
-        assert uris == ["accounts://status", "pool://status"]
+        assert uris == ["accounts://status", "jobsite://status", "pool://status"]
         await fake_core.close()
 
 

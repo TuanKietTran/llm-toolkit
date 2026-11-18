@@ -29,6 +29,7 @@ LOGIN_TEXT = [
 
 # Prompt input (ProseMirror contenteditable in current builds; textarea in older ones).
 PROMPT_INPUT = [
+    "textarea#mobile-composer-prompt",  # 2026-11 build: single <textarea name=prompt> composer
     "#prompt-textarea",
     "div[contenteditable='true']#prompt-textarea",
     "[data-testid='prompt-textarea']",
@@ -42,6 +43,7 @@ PROMPT_INPUT = [
 # actionability, so readiness waits on these id/testid-based selectors, which the fallback never
 # matches. Deliberately excludes the bare ``textarea[placeholder]`` fallback in PROMPT_INPUT.
 COMPOSER_READY = [
+    "textarea#mobile-composer-prompt",  # 2026-11 build (desktop too); ProseMirror div is gone
     "#prompt-textarea",
     "div[contenteditable='true']#prompt-textarea",
     "[data-testid='prompt-textarea']",
@@ -62,16 +64,22 @@ STOP_BUTTON = [
 
 # Assistant messages and their rendered content.
 ASSISTANT_MESSAGE = [
+    "li[data-message-role='assistant']",  # 2026-11 build: <ol data-conversation-transcript> of <li>
     "[data-message-author-role='assistant']",
     "div[data-message-author-role='assistant']",
 ]
 ASSISTANT_CONTENT = [
+    "[data-assistant-markdown-root]",  # 2026-11 build
     ".markdown",
     "[data-message-content]",
     ".prose",
 ]
 # Class present on the message element while it is still streaming (older builds).
 STREAMING_MARKER = [
+    # 2026-11 build: the assistant <li> gains data-message-complete once the reply settles, and the
+    # markdown wrapper carries aria-busy=true while streaming.
+    "li[data-message-role='assistant']:not([data-message-complete])",
+    "[data-assistant-markdown-root] [aria-busy='true']",
     ".result-streaming",
     "[data-message-streaming='true']",
 ]
@@ -98,10 +106,11 @@ STAY_LOGGED_OUT = [
 ]
 DISMISS_BUTTONS = [
     "button:has-text('Okay, let’s go')",
-    "button:has-text('Okay, let's go')",
+    "button:has-text(\"Okay, let's go\")",
     "button:has-text('Got it')",
-    "button:has-text('Accept all')",
-    "button:has-text('Accept')",
+    # Cookie banner: deliberately NOT clicked. On the 2026-11 build, answering it either way
+    # ("Accept all" or "Reject non-essential") leaves anonymous sends stuck on "Stop generating"
+    # with no assistant message ever rendered. The banner doesn't block the composer.
     "[data-testid='close-button']",
     "button[aria-label='Close']",
 ]
