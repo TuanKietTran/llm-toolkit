@@ -66,3 +66,12 @@ uv run orchestrator doctor
 
 Use the actual interface name from the host (for example `wg0`, `tun0`, or `tailscale0`). Per-account
 HTTP/SOCKS proxy configuration remains separate.
+
+## Job CV & Finder workflow
+
+`job-cv-finder/` is a pi-driven campaign on top of this server: live ITviec/LinkedIn search, scoring
+and CV tailoring on the worker pool, then `jobsite_apply`. Fill `leads/leads.json` per
+`INGEST_VIA_CHROME.md` (schema: `leads/leads.example.json`), set `CANDIDATE_NAME` (env or
+`job-cv-finder/.env.local`), then `job-cv-finder/run.sh` (Linux/macOS) or `job-cv-finder/run.ps1`
+(Windows; `-Provider llama-swap -Model gemma4-12b` for a local model). `leads.json` and `.env.local`
+are gitignored: they hold your real application history.

@@ -25,3 +25,7 @@ snapshots/
 
 # Node (integrations/pi)
 node_modules/
+
+# job-cv-finder: personal application history + local config
+job-cv-finder/leads/leads.json
+job-cv-finder/.env.local
