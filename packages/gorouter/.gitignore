@@ -7,3 +7,6 @@ e2e/node_modules/
 # e2e build artifacts
 /.dev/
 /data-e2e/
+
+# Windows build outputs
+/*.exe
