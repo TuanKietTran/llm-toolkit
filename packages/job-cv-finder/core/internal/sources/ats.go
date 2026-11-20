@@ -88,13 +88,25 @@ func (g *Greenhouse) Discover(ctx context.Context, src store.Source) ([]domain.R
 	if _, err := getJSON(ctx, g.Client, fmt.Sprintf("%s/v1/boards/%s/jobs?content=true", base, url.PathEscape(token)), &list); err != nil {
 		return nil, err
 	}
+	filter, err := locationFilter(src)
+	if err != nil {
+		return nil, err
+	}
+	pace := newPacer(src.Policy.RateLimitPerMinute)
 	out := make([]domain.RawJob, 0, len(list.Jobs))
 	for _, raw := range list.Jobs {
 		var j ghJob
 		if err := json.Unmarshal(raw, &j); err != nil {
 			return nil, fmt.Errorf("decode job: %w", err)
 		}
+		if filter != nil && !filter.MatchString(j.Location.Name) {
+			continue
+		}
 		// Questions come from the per-job endpoint; failure there must not drop the job.
+		// Detail calls are paced to the source's declared rate limit.
+		if err := pace.wait(ctx); err != nil {
+			return nil, err
+		}
 		var detail ghJob
 		detailRaw, err := getJSON(ctx, g.Client, fmt.Sprintf("%s/v1/boards/%s/jobs/%d?questions=true", base, url.PathEscape(token), j.ID), &detail)
 		if err == nil {
@@ -170,11 +182,18 @@ func (l *Lever) Discover(ctx context.Context, src store.Source) ([]domain.RawJob
 		return nil, err
 	}
 	company := strings.TrimSuffix(src.Name, " (Lever)")
+	filter, err := locationFilter(src)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]domain.RawJob, 0, len(raws))
 	for _, raw := range raws {
 		var p leverPosting
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return nil, fmt.Errorf("decode posting: %w", err)
+		}
+		if filter != nil && !filter.MatchString(p.Categories.Location+" "+p.WorkplaceType) {
+			continue
 		}
 		var b strings.Builder
 		b.WriteString(p.DescriptionPlain)

@@ -125,8 +125,19 @@ func TestWorkerProtocolOverHTTPAndSSE(t *testing.T) {
 	if c, b := e.do("POST", "/api/v1/candidate/snapshots", apiTok, `{"schema_version":1}`); c != 422 {
 		t.Fatalf("invalid snapshot %d %s", c, b)
 	}
-	if c, b := e.do("POST", "/api/v1/sources/mockats:demo/discover", apiTok, ""); c != 200 {
+	if c, b := e.do("POST", "/api/v1/sources/mockats:demo/discover", apiTok, ""); c != 202 {
 		t.Fatalf("discover %d %s", c, b)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, b := e.do("GET", "/api/v1/jobs", apiTok, "")
+		if strings.Count(string(b), `"job_id"`) == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background discovery did not finish: %s", b)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if c, b := e.do("POST", "/api/v1/sources/linkedin/discover", apiTok, ""); c != 422 {
 		t.Fatalf("polling linkedin must be refused, got %d %s", c, b)

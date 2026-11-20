@@ -20,7 +20,7 @@ JCF_DB=/var/lib/jcf/jcf.db
 JCF_API_TOKEN=<random ≥24 chars>     # shared with Ruxt's server only
 JCF_WORKER_TOKEN=<different random>  # shared with workers only
 JCF_SECRET_KEY=<base64 of 32 random bytes>  # from the secret manager; required to store credentials
-JCF_GREENHOUSE_BOARDS=acme:Acme,beta:Beta   # optional public boards to poll
+JCF_GREENHOUSE_BOARDS=acme:Acme,beta:Beta:Vietnam|Singapore   # optional public boards; optional :location regex
 JCF_LEVER_SITES=gamma:Gamma
 JCF_DISCOVER_EVERY=6h
 ```

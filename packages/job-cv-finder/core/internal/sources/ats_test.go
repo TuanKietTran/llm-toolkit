@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/TuanKietTran/llm-toolkit/packages/job-cv-finder/core/internal/domain"
 )
@@ -87,5 +88,38 @@ func TestDefaultPoliciesNeverPermitAutomatedPlatformSubmission(t *testing.T) {
 	gh := GreenhouseBoard("x", "X")
 	if m, _ := gh.Policy.Permits(domain.CapSubmitApplication); m != domain.MethodHandoff {
 		t.Error("greenhouse submit must be handoff for a candidate")
+	}
+}
+
+func TestGreenhouseLocationFilterAndPacing(t *testing.T) {
+	details := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/boards/acme/jobs":
+			w.Write([]byte(`{"jobs":[{"id":1,"title":"A","location":{"name":"Remote, Singapore"}},{"id":2,"title":"B","location":{"name":"Berlin"}},{"id":3,"title":"C","location":{"name":"Ho Chi Minh City"}}]}`))
+		default:
+			details++
+			w.Write([]byte(`{"questions":[]}`))
+		}
+	}))
+	defer srv.Close()
+	src := GreenhouseBoard("acme", "Acme")
+	src.Config["base_url"] = srv.URL
+	src.Config["location_filter"] = "singapore|ho chi minh"
+	src.Policy.RateLimitPerMinute = 600 // 100ms between detail calls
+	start := time.Now()
+	jobs, err := (&Greenhouse{Client: srv.Client()}).Discover(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 2 || details != 2 {
+		t.Fatalf("filter: %d jobs, %d detail calls", len(jobs), details)
+	}
+	if time.Since(start) < 100*time.Millisecond {
+		t.Fatal("detail calls were not paced")
+	}
+	src.Config["location_filter"] = "("
+	if _, err := (&Greenhouse{Client: srv.Client()}).Discover(context.Background(), src); err == nil {
+		t.Fatal("bad filter accepted")
 	}
 }

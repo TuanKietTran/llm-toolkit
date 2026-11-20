@@ -18,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -316,6 +317,7 @@ func (s *Server) addATSSource(w http.ResponseWriter, r *http.Request) error {
 		Kind    string `json:"kind"`    // greenhouse|lever
 		Token   string `json:"token"`   // board token / site name
 		Company string `json:"company"` // display name
+		Filter  string `json:"location_filter"`
 	}
 	if err := readJSON(r, &body, 1<<10); err != nil {
 		return err
@@ -334,6 +336,12 @@ func (s *Server) addATSSource(w http.ResponseWriter, r *http.Request) error {
 		return bad("kind must be greenhouse or lever")
 	}
 	src.Config["company"] = body.Company
+	if body.Filter != "" {
+		if _, err := regexp.Compile(body.Filter); err != nil || len(body.Filter) > 200 {
+			return bad("location_filter must be a valid regular expression")
+		}
+		src.Config["location_filter"] = body.Filter
+	}
 	if err := s.Engine.Store.UpsertSource(r.Context(), src); err != nil {
 		return err
 	}
@@ -341,14 +349,29 @@ func (s *Server) addATSSource(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// discover starts a discovery run in the background (paced sources can take minutes) and
+// returns 202; progress and results arrive as discovery.* events over SSE.
 func (s *Server) discover(w http.ResponseWriter, r *http.Request) error {
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-	defer cancel()
-	res, err := s.Engine.RunDiscovery(ctx, r.PathValue("id"), "")
+	id := r.PathValue("id")
+	src, err := s.Engine.Store.GetSource(r.Context(), id)
 	if err != nil {
 		return err
 	}
-	return ok(w, res)
+	if !src.Enabled {
+		return conflict("source is disabled")
+	}
+	if _, err := s.Engine.Registry.Discoverer(src); err != nil {
+		return &workflow.ValidationError{Err: err}
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		if _, err := s.Engine.RunDiscovery(ctx, id, ""); err != nil {
+			s.Log.Warn("discovery failed", "source", id, "err", err)
+		}
+	}()
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started", "source_id": id})
+	return nil
 }
 
 func (s *Server) listAccounts(w http.ResponseWriter, r *http.Request) error {
@@ -886,5 +909,3 @@ func (s *Server) failTask(w http.ResponseWriter, r *http.Request) error {
 	}
 	return ok(w, map[string]string{"status": state})
 }
-
-var _ = conflict

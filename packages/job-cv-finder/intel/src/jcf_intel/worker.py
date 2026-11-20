@@ -105,6 +105,7 @@ def main(argv: list[str] | None = None, sleep: Callable[[float], None] = time.sl
     ap.add_argument("--once", action="store_true", help="drain the queue and exit")
     args = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # idle polling would flood the log
     token = os.environ.get("JCF_WORKER_TOKEN", "")
     if not token:
         print("JCF_WORKER_TOKEN is required", file=sys.stderr)

@@ -9,7 +9,7 @@
 //	JCF_WORKER_TOKEN      bearer token for /internal/v1 (required; held by Python workers)
 //	JCF_SECRET_KEY        base64 32-byte key for credentials at rest (optional; without it
 //	                      credential storage is refused)
-//	JCF_GREENHOUSE_BOARDS comma list of token:Company for public Greenhouse boards
+//	JCF_GREENHOUSE_BOARDS comma list of token:Company[:location regex] for public Greenhouse boards
 //	JCF_LEVER_SITES       comma list of site:Company for public Lever postings
 //	JCF_MOCKATS_URL       enable the local mock ATS source (tests/demo only)
 //	JCF_MOCKATS_BOARD     its board token (default demo)
@@ -91,9 +91,13 @@ func run(log *slog.Logger) error {
 		}
 	}
 	for _, pair := range splitList(os.Getenv("JCF_GREENHOUSE_BOARDS")) {
-		tok, company, _ := strings.Cut(pair, ":")
+		tok, rest, _ := strings.Cut(pair, ":")
+		company, filter, _ := strings.Cut(rest, ":")
 		src := sources.GreenhouseBoard(tok, company)
 		src.Config["company"] = company
+		if filter != "" {
+			src.Config["location_filter"] = filter
+		}
 		if err := st.SeedSource(ctx, src); err != nil {
 			return err
 		}
