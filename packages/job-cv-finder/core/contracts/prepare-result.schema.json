@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jcf.local/contracts/prepare-result.schema.json",
+  "title": "PrepareResult",
+  "description": "Result of the intel.prepare task: the chosen Ruxt CV (exact revision), generated documents with per-statement evidence, and answers to application questions. Unknown answers stay unknown.",
+  "type": "object",
+  "required": ["application_id", "selected_cv", "documents", "answers", "validation", "engine"],
+  "additionalProperties": false,
+  "$defs": {
+    "statement": {
+      "type": "object",
+      "required": ["text", "evidence_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "evidence_refs": { "type": "array", "items": { "type": "string", "pattern": "^f_[a-f0-9]{16}$" }, "maxItems": 20 }
+      }
+    }
+  },
+  "properties": {
+    "application_id": { "type": "string" },
+    "selected_cv": {
+      "type": "object",
+      "required": ["cv_id", "revision", "reason", "score"],
+      "additionalProperties": false,
+      "properties": {
+        "cv_id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "integer", "minimum": 1 },
+        "reason": { "type": "string", "maxLength": 1000 },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["cv_id", "revision", "score"],
+            "additionalProperties": false,
+            "properties": {
+              "cv_id": { "type": "string" },
+              "revision": { "type": "integer" },
+              "score": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+    "documents": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["kind", "format", "content", "statements", "source_cv_id", "source_cv_revision"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "enum": ["tailored_cv", "cover_letter"] },
+          "format": { "enum": ["markdown", "text"] },
+          "content": { "type": "string", "minLength": 1, "maxLength": 400000 },
+          "statements": { "type": "array", "items": { "$ref": "#/$defs/statement" }, "maxItems": 500 },
+          "source_cv_id": { "type": "string" },
+          "source_cv_revision": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "answers": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "required": ["question_id", "status", "answer", "evidence_refs"],
+        "additionalProperties": false,
+        "properties": {
+          "question_id": { "type": "string" },
+          "status": { "enum": ["answered", "unknown"] },
+          "answer": { "type": ["string", "null"], "maxLength": 5000 },
+          "evidence_refs": { "type": "array", "items": { "type": "string" } },
+          "source": { "enum": ["candidate_fact", "candidate_preference", "none"] }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "required": ["passed", "issues"],
+      "additionalProperties": false,
+      "properties": {
+        "passed": { "type": "boolean" },
+        "issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["code", "message"],
+            "additionalProperties": false,
+            "properties": {
+              "code": { "type": "string" },
+              "message": { "type": "string", "maxLength": 1000 },
+              "document_kind": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "model_provider": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "prompt_version": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

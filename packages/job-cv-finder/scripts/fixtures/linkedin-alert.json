@@ -1,0 +1,7 @@
+{
+ "message_id": "<e2e-alert-1@linkedin.example>",
+ "from": "LinkedIn Job Alerts <jobalerts-noreply@linkedin.com>",
+ "subject": "Acme Fintech is hiring a Backend Engineer (Go)",
+ "date": "2026-11-20T08:00:00Z",
+ "text": "Your job alert for Backend Engineer in Ho Chi Minh City\nBackend Engineer (Go, PostgreSQL)\nAcme Fintech\nHo Chi Minh City, Vietnam (Hybrid)\n\nApply with resume & profile\nView job: https://www.linkedin.com/comm/jobs/view/4486000001/?trackingId=x\n\n---------------------------------------------------------\n"
+}

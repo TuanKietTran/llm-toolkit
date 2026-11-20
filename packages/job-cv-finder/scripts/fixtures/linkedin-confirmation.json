@@ -1,0 +1,7 @@
+{
+ "message_id": "<e2e-confirm-1@linkedin.example>",
+ "from": "LinkedIn <jobs-noreply@linkedin.com>",
+ "subject": "Test, your application was sent to Acme Fintech",
+ "date": "2026-11-20T09:00:00Z",
+ "text": "Your application was sent to Acme Fintech\n\nBackend Engineer (Go, PostgreSQL)\nAcme Fintech\nHo Chi Minh City, Vietnam\nView job: https://www.linkedin.com/comm/jobs/view/4486000001/?trackingId=y\n\n---------------------------------------------------------\n\nApplied on November 20, 2026"
+}

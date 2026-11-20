@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jcf.local/contracts/match-result.schema.json",
+  "title": "MatchResult",
+  "description": "Result of the intel.match task. Produced by the Python worker, validated and persisted by Go. A match never authorizes a submission on its own.",
+  "type": "object",
+  "required": ["job_id", "snapshot_id", "match_score", "eligibility", "confidence", "dimensions", "matched_requirements", "missing_requirements", "uncertain_requirements", "facts", "recommendation", "engine"],
+  "additionalProperties": false,
+  "$defs": {
+    "requirement": {
+      "type": "object",
+      "required": ["requirement", "kind", "evidence_refs"],
+      "additionalProperties": false,
+      "properties": {
+        "requirement": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "kind": { "enum": ["hard", "required_skill", "preferred_skill", "experience", "seniority", "location", "work_mode", "compensation", "language", "education", "career_preference"] },
+        "evidence_refs": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
+        "note": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "fact": {
+      "type": "object",
+      "required": ["fact_id", "category", "value", "source_document_id", "source_version_id", "evidence_location", "verification_status", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "fact_id": { "type": "string", "pattern": "^f_[a-f0-9]{16}$" },
+        "category": { "enum": ["identity", "employment", "job_title", "responsibility", "skill", "technology", "education", "certification", "language", "years_experience", "project", "achievement", "location"] },
+        "value": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "source_document_id": { "type": "string" },
+        "source_version_id": { "type": "string" },
+        "evidence_location": { "type": "string", "maxLength": 200 },
+        "verification_status": { "enum": ["candidate_stated", "derived", "unverified"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "dimension": {
+      "type": "object",
+      "required": ["status", "score"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["met", "partial", "unmet", "unknown", "not_applicable"] },
+        "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "note": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "model_provider": { "type": ["string", "null"] },
+        "model_id": { "type": ["string", "null"] },
+        "prompt_version": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "properties": {
+    "job_id": { "type": "string" },
+    "snapshot_id": { "type": "string" },
+    "match_score": { "type": "number", "minimum": 0, "maximum": 1 },
+    "eligibility": { "enum": ["eligible", "ineligible", "uncertain"] },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_skills", "preferred_skills", "experience", "seniority", "location", "work_mode", "compensation", "career_preferences"],
+      "properties": {
+        "required_skills": { "$ref": "#/$defs/dimension" },
+        "preferred_skills": { "$ref": "#/$defs/dimension" },
+        "experience": { "$ref": "#/$defs/dimension" },
+        "seniority": { "$ref": "#/$defs/dimension" },
+        "location": { "$ref": "#/$defs/dimension" },
+        "work_mode": { "$ref": "#/$defs/dimension" },
+        "compensation": { "$ref": "#/$defs/dimension" },
+        "career_preferences": { "$ref": "#/$defs/dimension" }
+      }
+    },
+    "matched_requirements": { "type": "array", "items": { "$ref": "#/$defs/requirement" } },
+    "missing_requirements": { "type": "array", "items": { "$ref": "#/$defs/requirement" } },
+    "uncertain_requirements": { "type": "array", "items": { "$ref": "#/$defs/requirement" } },
+    "facts": { "type": "array", "items": { "$ref": "#/$defs/fact" }, "maxItems": 2000 },
+    "recommendation": { "enum": ["strong_match", "match", "weak_match", "no_match"] },
+    "engine": { "$ref": "#/$defs/engine" }
+  }
+}

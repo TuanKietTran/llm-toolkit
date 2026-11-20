@@ -1,0 +1,116 @@
+{
+ "schema_version": 1,
+ "source": {
+  "system": "ruxt",
+  "exported_at": "2026-11-20T00:00:00Z"
+ },
+ "profile": {
+  "profile_id": "profile-1",
+  "updated_at": "2026-11-19T00:00:00Z",
+  "data": {
+   "version": 1,
+   "identity": {
+    "fullName": "Test Candidate",
+    "headline": "Senior Backend Engineer",
+    "summary": "",
+    "location": "Ho Chi Minh City"
+   },
+   "contacts": [
+    {
+     "kind": "email",
+     "label": "Email",
+     "value": "candidate@example.test"
+    },
+    {
+     "kind": "linkedin",
+     "label": "LinkedIn",
+     "value": "https://www.linkedin.com/in/example"
+    }
+   ],
+   "experiences": [
+    {
+     "title": "Senior Backend Engineer",
+     "company": "Example Pay",
+     "location": "HCMC",
+     "start": "2021-03",
+     "end": "present",
+     "highlights": [
+      "Built payment APIs in Go on PostgreSQL serving 2M requests/day",
+      "Ran services on Docker and Kubernetes"
+     ]
+    },
+    {
+     "title": "Software Engineer",
+     "company": "Sample Corp",
+     "location": "HCMC",
+     "start": "2018-06",
+     "end": "2021-02",
+     "highlights": [
+      "Maintained Python data pipelines"
+     ]
+    }
+   ],
+   "skills": [
+    {
+     "name": "Backend",
+     "skills": [
+      "Golang",
+      "PostgreSQL",
+      "Docker",
+      "Python"
+     ]
+    }
+   ],
+   "certifications": [],
+   "education": [
+    {
+     "degree": "BSc Computer Science",
+     "school": "Example University",
+     "location": "",
+     "start": "",
+     "end": "",
+     "details": ""
+    }
+   ],
+   "projects": [],
+   "languages": [
+    "English",
+    "Vietnamese"
+   ]
+  }
+ },
+ "cvs": [
+  {
+   "cv_id": "cv-backend",
+   "revision": 7,
+   "title": "Backend CV",
+   "updated_at": "2026-11-18T00:00:00Z",
+   "markdown": "# Test Candidate\n\n## Experience\n- Maintained Python data pipelines\n- Built payment APIs in Go on PostgreSQL serving 2M requests/day\n- Ran services on Docker and Kubernetes\n"
+  },
+  {
+   "cv_id": "cv-frontend",
+   "revision": 2,
+   "title": "Frontend CV",
+   "updated_at": "2026-11-01T00:00:00Z",
+   "markdown": "# Test Candidate\n\n## Experience\n- Built dashboards in TypeScript and React\n"
+  }
+ ],
+ "preferences": {
+  "locations": [
+   "Ho Chi Minh City"
+  ],
+  "work_modes": [
+   "hybrid",
+   "remote"
+  ],
+  "target_roles": [
+   "Backend Engineer"
+  ],
+  "excluded_keywords": [
+   "QA"
+  ],
+  "answers": {
+   "notice_period": "One month"
+  }
+ }
+}

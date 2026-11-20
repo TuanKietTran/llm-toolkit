@@ -1,0 +1,7 @@
+core/data/
+*.db
+*.db-wal
+*.db-shm
+intel/.venv/
+__pycache__/
+.pytest_cache/

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jcf.local/contracts/candidate-snapshot.schema.json",
+  "title": "CandidateSnapshot",
+  "description": "A user-initiated, read-only copy of Ruxt-owned candidate data. Ruxt stays authoritative: every CV keeps its Ruxt id and revision so later decisions can be traced back to the exact source.",
+  "type": "object",
+  "required": ["schema_version", "source", "profile", "cvs", "preferences"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "source": {
+      "type": "object",
+      "required": ["system", "exported_at"],
+      "additionalProperties": false,
+      "properties": {
+        "system": { "const": "ruxt" },
+        "app_version": { "type": "string", "maxLength": 64 },
+        "exported_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "required": ["profile_id", "updated_at", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "profile_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "label": { "type": "string", "maxLength": 200 },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "data": {
+          "description": "Ruxt CvProfileProps, passed through unchanged. Unknown fields are kept so the worker never invents a value Ruxt did not send.",
+          "type": "object"
+        }
+      }
+    },
+    "cvs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "required": ["cv_id", "revision", "title", "markdown", "updated_at"],
+        "additionalProperties": false,
+        "properties": {
+          "cv_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "revision": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string", "maxLength": 300 },
+          "markdown": { "type": "string", "minLength": 1, "maxLength": 400000 },
+          "css": { "type": "string", "maxLength": 400000 },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "preferences": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "locations": { "type": "array", "items": { "type": "string", "maxLength": 120 }, "maxItems": 30 },
+        "work_modes": { "type": "array", "items": { "enum": ["onsite", "hybrid", "remote"] } },
+        "target_roles": { "type": "array", "items": { "type": "string", "maxLength": 120 }, "maxItems": 30 },
+        "excluded_keywords": { "type": "array", "items": { "type": "string", "maxLength": 120 }, "maxItems": 50 },
+        "salary_min": { "type": ["number", "null"], "minimum": 0 },
+        "salary_currency": { "type": ["string", "null"], "maxLength": 8 },
+        "answers": {
+          "description": "Standing answers the candidate wrote themselves (e.g. notice period, work authorization). Never generated.",
+          "type": "object",
+          "additionalProperties": { "type": "string", "maxLength": 2000 },
+          "maxProperties": 100
+        }
+      }
+    }
+  }
+}
