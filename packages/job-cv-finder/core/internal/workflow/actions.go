@@ -27,6 +27,10 @@ func (e *Engine) OverrideSelect(ctx context.Context, appID, note string) error {
 
 // Rematch re-runs matching (after the candidate enriches the job or sends new Ruxt data).
 func (e *Engine) Rematch(ctx context.Context, appID string) error {
+	return e.rematch(ctx, appID, actor())
+}
+
+func (e *Engine) rematch(ctx context.Context, appID string, by map[string]any) error {
 	return e.act(ctx, appID, func(tx *sql.Tx, app *store.Application) error {
 		snap, err := e.Store.LatestCandidateSnapshot(ctx)
 		if err != nil {
@@ -38,7 +42,7 @@ func (e *Engine) Rematch(ctx context.Context, appID string) error {
 			}
 			app.SnapshotID = snap.ID
 		}
-		if err := e.Store.Transition(ctx, tx, app, domain.StateMatching, store.Patch{ClearException: true, ClearNextAttempt: true}, actor()); err != nil {
+		if err := e.Store.Transition(ctx, tx, app, domain.StateMatching, store.Patch{ClearException: true, ClearNextAttempt: true}, by); err != nil {
 			return err
 		}
 		j, err := e.Store.GetJob(ctx, app.JobID)

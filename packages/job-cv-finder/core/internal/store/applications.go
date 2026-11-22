@@ -105,6 +105,14 @@ func (s *Store) GetApplicationTx(ctx context.Context, tx *sql.Tx, id string) (Ap
 	return scanApp(tx.QueryRowContext(ctx, `SELECT `+appCols+` FROM applications WHERE id=?`, id))
 }
 
+// HasExecutionRun reports whether any submission attempt was ever started for the application,
+// whatever its outcome. An application that has one must never be restarted automatically.
+func (s *Store) HasExecutionRun(ctx context.Context, appID string) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM execution_runs WHERE application_id=?`, appID).Scan(&n)
+	return n > 0, err
+}
+
 // ListApplications filters by states (empty = all), newest first.
 func (s *Store) ListApplications(ctx context.Context, states []domain.AppState, limit int) ([]Application, error) {
 	q := `SELECT ` + appCols + ` FROM applications`

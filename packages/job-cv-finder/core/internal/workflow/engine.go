@@ -128,8 +128,46 @@ func (e *Engine) IngestCandidateSnapshot(ctx context.Context, raw []byte) (Snaps
 			out.NewApplications++
 		}
 	}
+	if err := e.rematchStale(ctx, snap.ID); err != nil {
+		return out, err
+	}
 	e.Wake()
 	return out, nil
+}
+
+// rematchStale re-evaluates, against the newest snapshot, applications that are waiting on the
+// candidate or were judged below the threshold. Without it, editing a CV, a profile or the
+// standing answers and sending again changed nothing for jobs already discovered. Anything that
+// ever started a submission attempt is left alone: restarting it could submit twice.
+func (e *Engine) rematchStale(ctx context.Context, snapshotID string) error {
+	apps, err := e.Store.ListApplications(ctx, []domain.AppState{domain.StateMatched, domain.StateNotSelected, domain.StateBlockedException}, 1000)
+	if err != nil {
+		return err
+	}
+	for _, a := range apps {
+		if a.SnapshotID == snapshotID {
+			continue
+		}
+		if ran, err := e.Store.HasExecutionRun(ctx, a.ID); err != nil {
+			return err
+		} else if ran {
+			continue
+		}
+		if j, err := e.Store.GetJob(ctx, a.JobID); err != nil {
+			return err
+		} else if j.Status == "expired" {
+			continue
+		}
+		by := map[string]any{"actor": "system", "reason": "candidate snapshot updated"}
+		if err := e.rematch(ctx, a.ID, by); err != nil {
+			var ve *ValidationError
+			if errors.As(err, &ve) || errors.Is(err, store.ErrConflict) {
+				continue // moved on concurrently; the next snapshot or tick will see it
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // ValidationError marks bad input (HTTP 400/422), as opposed to internal failures.

@@ -301,6 +301,116 @@ func TestTextOnlyResumeStillAsks(t *testing.T) {
 	}
 }
 
+// newSnapshotJSON is the same candidate after editing the CV, as when Ruxt sends again.
+func newSnapshotJSON() []byte {
+	r := strings.NewReplacer("Built Go services on PostgreSQL", "Built Go services on PostgreSQL and Kubernetes", "2026-11-19T00:00:00Z", "2026-11-22T00:00:00Z")
+	return []byte(r.Replace(snapshotJSON))
+}
+
+// Regression (2026-11-22, live run): a re-sent snapshot only reached jobs discovered afterwards.
+// Editing the CV or the standing answers and sending again changed nothing for existing applications.
+func TestResendingSnapshotReevaluatesWaitingApplicationsOnly(t *testing.T) {
+	h := newHarness(t)
+	h.discover()
+	h.settle()
+	submitted, blocked, notSel := h.appFor("1001"), h.appFor("1003"), h.appFor("1002")
+	if submitted.State != domain.StateSubmitted || blocked.State != domain.StateBlockedException || notSel.State != domain.StateNotSelected {
+		t.Fatalf("setup states %s %s %s", submitted.State, blocked.State, notSel.State)
+	}
+	sum, err := h.e.IngestCandidateSnapshot(h.ctx, newSnapshotJSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.settle()
+	for _, id := range []string{"1002", "1003"} {
+		if a := h.appFor(id); a.SnapshotID != sum.ID {
+			t.Fatalf("%s still matched against the old snapshot %s (new %s)", id, a.SnapshotID, sum.ID)
+		}
+	}
+	if a := h.appFor("1001"); a.State != domain.StateSubmitted || a.SnapshotID != submitted.SnapshotID {
+		t.Fatalf("submitted application was touched: %s snapshot %s", a.State, a.SnapshotID)
+	}
+	if n := len(h.ats.Applications()); n != 1 {
+		t.Fatalf("ATS has %d applications, want 1", n)
+	}
+	// Sending the identical content again changes nothing and re-runs nothing.
+	before := h.eventCount()
+	if _, err := h.e.IngestCandidateSnapshot(h.ctx, newSnapshotJSON()); err != nil {
+		t.Fatal(err)
+	}
+	h.settle()
+	if h.eventCount() != before { // deduplicated by content hash: not even a snapshot_received event
+		t.Fatalf("identical snapshot caused %d new events", h.eventCount()-before)
+	}
+}
+
+// An application that ever started a submission attempt is never restarted automatically.
+func TestResendingSnapshotNeverRestartsAnExecutedApplication(t *testing.T) {
+	h := newHarness(t)
+	h.discover()
+	h.settle()
+	b := h.appFor("1003")
+	if _, err := h.e.Store.DB.Exec(`INSERT INTO execution_runs(id, application_id, executor, idempotency_key, attempt, state, started_at) VALUES('run_x', ?, 'authorized_api', 'k', 1, 'unknown', '2026-11-22T00:00:00Z')`, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.e.IngestCandidateSnapshot(h.ctx, newSnapshotJSON()); err != nil {
+		t.Fatal(err)
+	}
+	h.settle()
+	if a := h.appFor("1003"); a.SnapshotID != b.SnapshotID || a.State != domain.StateBlockedException {
+		t.Fatalf("executed application was restarted: %s snapshot %s", a.State, a.SnapshotID)
+	}
+}
+
+// Regression: SaveAnswers replaced every answer, so regenerating documents erased what the
+// candidate had typed for the application.
+func TestCandidateAnswersSurviveRegeneration(t *testing.T) {
+	h := newHarnessJobs(t, []mockats.Job{{
+		ID: 3001, Title: "Senior Backend Engineer (Go)", Location: "Ho Chi Minh City (Hybrid)",
+		Content: "&lt;h3&gt;Requirements&lt;/h3&gt;&lt;ul&gt;&lt;li&gt;Golang and PostgreSQL&lt;/li&gt;&lt;/ul&gt;",
+		Questions: []mockats.Question{
+			{Name: "resume", Label: "Resume/CV", Type: "input_file", Required: true},
+			{Name: "question_visa", Label: "Do you require visa sponsorship?", Type: "input_text", Required: true},
+			{Name: "question_clearance", Label: "Do you hold a security clearance?", Type: "input_text", Required: true},
+		},
+	}})
+	h.discover()
+	h.settle()
+	a := h.appFor("3001")
+	if a.State != domain.StateBlockedException {
+		t.Fatalf("setup state %s", a.State)
+	}
+	if err := h.e.ProvideAnswer(h.ctx, a.ID, "question_visa", "No sponsorship needed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.e.Regenerate(h.ctx, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	h.settle()
+	answers, err := h.e.Store.ListAnswers(h.ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var visa, clearance *store.Answer
+	for i := range answers {
+		switch answers[i].QuestionID {
+		case "question_visa":
+			visa = &answers[i]
+		case "question_clearance":
+			clearance = &answers[i]
+		}
+	}
+	if visa == nil || visa.Status != "answered" || visa.Answer == nil || *visa.Answer != "No sponsorship needed" || visa.Source != "candidate_provided" {
+		t.Fatalf("typed answer lost after regeneration: %+v", visa)
+	}
+	if clearance == nil || clearance.Status == "answered" {
+		t.Fatalf("an unanswered question must stay unanswered: %+v", clearance)
+	}
+	if reason := deref(h.appFor("3001").ExceptionReason); !strings.Contains(reason, "clearance") || strings.Contains(reason, "visa") {
+		t.Fatalf("still-missing list wrong: %q", reason)
+	}
+}
+
 func TestStoredButErroredSubmissionIsReconciledNotDuplicated(t *testing.T) {
 	h := newHarness(t)
 	h.ats.Faults.FailAfterStore.Store(1)

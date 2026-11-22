@@ -449,6 +449,18 @@ func (e *Engine) applyPrepare(ctx context.Context, tx *sql.Tx, app *store.Applic
 			fileQuestions[q.ID] = true
 		}
 	}
+	// Answers the candidate typed for this application are decisions, not derivations: preparing
+	// again (regenerate, retry, a new snapshot) must not erase them.
+	previous, err := e.Store.ListAnswers(ctx, app.ID)
+	if err != nil {
+		return err
+	}
+	provided := map[string]store.Answer{}
+	for _, p := range previous {
+		if p.Source == "candidate_provided" && p.Status == "answered" {
+			provided[p.QuestionID] = p
+		}
+	}
 	var answers []store.Answer
 	var missing []string
 	for _, q := range job.Questions {
@@ -473,6 +485,9 @@ func (e *Engine) applyPrepare(ctx context.Context, tx *sql.Tx, app *store.Applic
 			if w.Status == "answered" && w.Answer != nil && strings.TrimSpace(*w.Answer) != "" && okRefs && (w.Source == "candidate_preference" || len(w.EvidenceRefs) > 0) {
 				a.Status, a.Answer, a.Source, a.EvidenceRefs = "answered", w.Answer, w.Source, w.EvidenceRefs
 			}
+		}
+		if kept, ok := provided[q.ID]; ok {
+			a = kept
 		}
 		if a.Required && a.Status != "answered" {
 			missing = append(missing, q.Label)
