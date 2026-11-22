@@ -166,3 +166,73 @@ func TestTaskLeaseExpiryRedeliveryAndDeadLetter(t *testing.T) {
 		t.Fatalf("dead letter: %v %v %v", final, err, called)
 	}
 }
+
+func countReceipts(t *testing.T, s *Store, appID string) int {
+	t.Helper()
+	rc, err := s.ListReceipts(context.Background(), appID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(rc)
+}
+
+// Regression (2026-11-22, live run): UNIQUE(kind, external_ref) with DO NOTHING silently dropped the
+// receipt of a second application whose platform reference had been seen before, while the
+// application still became SUBMITTED.
+func TestReceiptReferenceReuseKeepsEachApplicationsReceipt(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newStore(t)
+	first, _ := seedApp(t, s)
+	j2, _, err := s.IngestJob(ctx, normalize.Normalize("linkedin", domain.RawJob{ExternalJobID: "2", Company: "Beta", Title: "Platform Engineer"}, s.Now()), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, created, err := s.CreateApplication(ctx, j2, first.SnapshotID, nil)
+	if err != nil || !created {
+		t.Fatal(err)
+	}
+	save := func(app Application) {
+		t.Helper()
+		if err := s.Tx(ctx, func(tx *sql.Tx) error {
+			return s.SaveReceipt(ctx, tx, Receipt{ApplicationID: app.ID, Kind: "ats_api", ExternalRef: "mockats:demo:mock-app-1", Evidence: []byte(`{}`), Verified: true})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save(first)
+	save(second) // same platform reference, different application
+	if countReceipts(t, s, first.ID) != 1 || countReceipts(t, s, second.ID) != 1 {
+		t.Fatalf("receipts: first=%d second=%d", countReceipts(t, s, first.ID), countReceipts(t, s, second.ID))
+	}
+	save(first) // replaying the same receipt stays a no-op
+	save(second)
+	if countReceipts(t, s, first.ID) != 1 || countReceipts(t, s, second.ID) != 1 {
+		t.Fatal("replay created duplicate receipts")
+	}
+}
+
+func TestSubmittedIsRefusedWithoutAReceipt(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newStore(t)
+	app, _ := seedApp(t, s)
+	if err := s.Tx(ctx, func(tx *sql.Tx) error { return s.Transition(ctx, tx, &app, domain.StateVerifying, Patch{}, nil) }); err != nil {
+		t.Fatal(err)
+	}
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
+		return s.Transition(ctx, tx, &app, domain.StateSubmitted, Patch{Submitted: true}, nil)
+	})
+	if err == nil {
+		t.Fatal("SUBMITTED accepted without a receipt")
+	}
+	if got, _ := s.GetApplication(ctx, app.ID); got.State != domain.StateVerifying {
+		t.Fatalf("state changed despite the refusal: %s", got.State)
+	}
+	if err := s.Tx(ctx, func(tx *sql.Tx) error {
+		if err := s.SaveReceipt(ctx, tx, Receipt{ApplicationID: app.ID, Kind: "user_attested", ExternalRef: app.ID + ":a", Evidence: []byte(`{}`)}); err != nil {
+			return err
+		}
+		return s.Transition(ctx, tx, &app, domain.StateSubmitted, Patch{Submitted: true}, nil)
+	}); err != nil {
+		t.Fatalf("SUBMITTED with a receipt: %v", err)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -190,6 +191,16 @@ type Patch struct {
 func (s *Store) Transition(ctx context.Context, tx *sql.Tx, app *Application, to domain.AppState, p Patch, detail map[string]any) error {
 	if err := domain.CheckTransition(app.State, to); err != nil {
 		return err
+	}
+	if to == domain.StateSubmitted {
+		// "Submitted" is only ever shown with evidence; refuse the state rather than lose it.
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM submission_receipts WHERE application_id=?`, app.ID).Scan(&n); err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("refusing to mark %s SUBMITTED without a receipt", app.ID)
+		}
 	}
 	sets := []string{"state=?", "version=version+1", "updated_at=?"}
 	now := s.Now()
@@ -477,12 +488,33 @@ type Receipt struct {
 	ReceivedAt    string          `json:"received_at"`
 }
 
-// SaveReceipt stores a receipt; the same (kind, external_ref) is stored once.
+// SaveReceipt stores a receipt. Replaying the same receipt for the same application is a no-op.
+// If a different application already holds the (kind, external_ref) pair, the platform reused a
+// reference (or a test double restarted); the submission still happened, so the receipt is kept
+// under a disambiguated reference instead of being dropped, which would have left the
+// application SUBMITTED with no receipt.
 func (s *Store) SaveReceipt(ctx context.Context, tx *sql.Tx, r Receipt) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO submission_receipts(id, application_id, kind, external_ref, evidence, verified, received_at) VALUES(?,?,?,?,?,?,?)
-		ON CONFLICT(kind, external_ref) DO NOTHING`,
-		NewID("rcpt"), r.ApplicationID, r.Kind, r.ExternalRef, string(r.Evidence), boolInt(r.Verified), ts(s.Now()))
-	return err
+	ref := r.ExternalRef
+	for attempt := 0; attempt < 2; attempt++ {
+		res, err := tx.ExecContext(ctx, `INSERT INTO submission_receipts(id, application_id, kind, external_ref, evidence, verified, received_at) VALUES(?,?,?,?,?,?,?)
+			ON CONFLICT(kind, external_ref) DO NOTHING`,
+			NewID("rcpt"), r.ApplicationID, r.Kind, ref, string(r.Evidence), boolInt(r.Verified), ts(s.Now()))
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			return nil
+		}
+		var owner string
+		if err := tx.QueryRowContext(ctx, `SELECT application_id FROM submission_receipts WHERE kind=? AND external_ref=?`, r.Kind, ref).Scan(&owner); err != nil {
+			return err
+		}
+		if owner == r.ApplicationID {
+			return nil
+		}
+		ref = r.ExternalRef + "#" + r.ApplicationID
+	}
+	return fmt.Errorf("receipt %s/%s could not be stored", r.Kind, r.ExternalRef)
 }
 
 // ListReceipts returns receipts for an application.
