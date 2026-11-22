@@ -197,9 +197,30 @@ _ANSWER_KEYS = [
 ]
 
 
+def _contact(contacts: list[dict[str, Any]], *kinds: str) -> str | None:
+    return next((str(c["value"]).strip() for c in contacts if str(c.get("kind", "")).lower() in kinds and str(c.get("value", "")).strip()), None)
+
+
+def _name_parts(full_name: str) -> tuple[str, str] | None:
+    """First/last only when the full name is exactly two words. Longer names (every Vietnamese
+    name has three or more) are ambiguous about which part a form calls "first", so they are
+    left for the candidate rather than guessed."""
+    parts = full_name.split()
+    return (parts[0], parts[1]) if len(parts) == 2 else None
+
+
 def answer_questions(questions: list[dict[str, Any]], candidate: dict[str, Any], facts: list[Fact]) -> list[dict[str, Any]]:
     standing = {k.strip().lower(): v for k, v in ((candidate.get("preferences") or {}).get("answers") or {}).items()}
     contacts = ((candidate.get("profile") or {}).get("data") or {}).get("contacts") or []
+    ident = next((f for f in facts if f.category == "identity"), None)
+    names = _name_parts(ident.value) if ident else None
+    # Standard identity fields every board asks for, answered from the profile the candidate wrote.
+    identity = {
+        "email": _contact(contacts, "email"),
+        "phone": _contact(contacts, "phone", "tel", "mobile"),
+        "first_name": names[0] if names else None,
+        "last_name": names[1] if names else None,
+    }
     out = []
     for q in questions:
         label = q.get("label", "")
@@ -210,6 +231,8 @@ def answer_questions(questions: list[dict[str, Any]], candidate: dict[str, Any],
             ans.update(status="answered", answer=direct, source="candidate_preference")
         elif key and standing.get(key):
             ans.update(status="answered", answer=standing[key], source="candidate_preference")
+        elif identity.get(str(q.get("id"))) and ident:
+            ans.update(status="answered", answer=identity[str(q["id"])], source="candidate_fact", evidence_refs=[ident.fact_id])
         elif re.search(r"linkedin", label, re.I):
             link = next((c["value"] for c in contacts if c.get("kind") == "linkedin" and c.get("value")), None)
             fact = next((f for f in facts if f.category == "identity"), None)

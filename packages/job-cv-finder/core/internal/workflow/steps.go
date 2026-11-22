@@ -20,6 +20,15 @@ import (
 
 // actionable states are polled by the loop; HANDOFF_PENDING, BLOCKED_EXCEPTION and the
 // terminal states wait for external evidence or the candidate.
+// Greenhouse-style boards expose each attachment slot twice: a file field and a paste-as-text
+// alternative, both flagged required. The slot is satisfied once its document is attached;
+// demanding the text twin as well would block every such application until the candidate pasted
+// their resume into a form.
+var (
+	attachmentKinds     = map[string]string{"resume": "tailored_cv", "cover_letter": "cover_letter"}
+	attachmentTextTwins = map[string]string{"resume_text": "resume", "cover_letter_text": "cover_letter"}
+)
+
 var actionable = []domain.AppState{
 	domain.StateMatching, domain.StateMatched, domain.StateSelected, domain.StatePreparing, domain.StatePrepared,
 	domain.StatePolicyCheck, domain.StateExecuting, domain.StateVerifying, domain.StateFailedRetryable, domain.StateSubmissionUnknown,
@@ -434,16 +443,27 @@ func (e *Engine) applyPrepare(ctx context.Context, tx *sql.Tx, app *store.Applic
 	for i, a := range p.Answers {
 		byID[a.QuestionID] = i
 	}
+	fileQuestions := map[string]bool{}
+	for _, q := range job.Questions {
+		if q.Type == "file" {
+			fileQuestions[q.ID] = true
+		}
+	}
 	var answers []store.Answer
 	var missing []string
 	for _, q := range job.Questions {
 		a := store.Answer{QuestionID: q.ID, Question: q.Label, Required: q.Required, Status: "unknown", Source: "none", EvidenceRefs: []string{}}
+		twin, isTwin := attachmentTextTwins[q.ID]
 		if q.Type == "file" {
-			kind := map[string]string{"resume": "tailored_cv", "cover_letter": "cover_letter"}[q.ID]
+			kind := attachmentKinds[q.ID]
 			if docKinds[kind] {
 				v := "attached: " + kind
 				a.Status, a.Answer, a.Source = "answered", &v, "candidate_fact"
 			}
+		} else if isTwin && fileQuestions[twin] && docKinds[attachmentKinds[twin]] {
+			// The paste-as-text alternative of an attachment slot that is already filled by a file.
+			v := "see attached " + attachmentKinds[twin]
+			a.Status, a.Answer, a.Source = "answered", &v, "candidate_fact"
 		} else if i, ok := byID[q.ID]; ok {
 			w := p.Answers[i]
 			okRefs := true

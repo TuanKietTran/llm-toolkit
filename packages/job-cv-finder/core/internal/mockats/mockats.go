@@ -202,9 +202,12 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request, jobID string) {
 			continue
 		}
 		if q.Type == "input_file" {
-			if files[q.Name] == 0 {
+			if files[q.Name] == 0 && fields[q.Name+"_text"] == "" {
 				missing = append(missing, q.Name)
 			}
+		} else if strings.HasSuffix(q.Name, "_text") && files[strings.TrimSuffix(q.Name, "_text")] > 0 {
+			// Like Greenhouse, the paste-as-text twin of an attached file is not required.
+			continue
 		} else if fields[q.Name] == "" {
 			missing = append(missing, q.Name)
 		}

@@ -67,6 +67,83 @@ def test_match_excluded_and_partial(snapshot, job, check):
     assert any(m["requirement"] == "SQL" for m in r["missing_requirements"])
 
 
+def _unreadable(job, **over):
+    """A real-world shape: a posting whose requirements the lexicon cannot read (GitLab sales roles)."""
+    base = dict(job, required_skills=[], preferred_skills=[], experience_requirement="", description="Own the customer advocacy programme.",
+                location="", work_mode="unknown")
+    base.update(over)
+    return base
+
+
+def test_title_seniority_alone_is_not_a_100_percent_match(snapshot, job, check):
+    # Regression (2026-11-22, live run): "Lead Customer Advocacy Manager, APJ" scored 100% "match" for a
+    # backend engineer because the only known dimension was a "lead"/"senior" word in the title.
+    r = match(_unreadable(job, title="Lead Customer Advocacy Manager, APJ"), snapshot, "c")
+    check("match-result.schema.json", r)
+    assert r["match_score"] < 0.35
+    assert r["recommendation"] not in {"match", "strong_match"}
+    assert r["eligibility"] == "uncertain" and r["confidence"] <= 0.1  # seniority (+ target-role) weight only
+    assert any(u["kind"] == "required_skill" for u in r["uncertain_requirements"])
+
+
+def test_equally_unknown_jobs_score_alike(snapshot, job):
+    with_word = match(_unreadable(job, title="Senior Account Executive"), snapshot, "c")
+    without = match(_unreadable(job, title="Account Executive"), snapshot, "c")
+    assert with_word["recommendation"] == without["recommendation"] == "no_match"
+    assert with_word["match_score"] < 0.35 and without["match_score"] < 0.35
+
+
+def test_unreadable_requirements_are_never_recommended(snapshot, job, check):
+    # Everything else known and favourable, but the job's requirements could not be read.
+    j = _unreadable(job, title="Senior Solutions Architect", experience_requirement="4+ years", location="Ho Chi Minh City", work_mode="hybrid")
+    r = match(j, snapshot, "c")
+    check("match-result.schema.json", r)
+    assert r["dimensions"]["required_skills"]["status"] == "unknown"
+    assert r["recommendation"] in {"weak_match", "no_match"}
+    assert r["recommendation"] != "match"
+
+
+def test_readable_requirements_still_recommend(snapshot, job):
+    # The discount must not touch jobs that state their requirements.
+    r = match(job, snapshot, "c")
+    assert r["recommendation"] in {"strong_match", "match"} and r["match_score"] >= 0.8
+
+
+def _answers(snapshot, questions):
+    from jcf_intel.prepare import answer_questions
+
+    return {a["question_id"]: a for a in answer_questions(questions, snapshot, extract_facts(snapshot))}
+
+
+IDENTITY_QS = [{"id": i, "label": label, "required": True, "type": "text"}
+               for i, label in (("first_name", "First Name"), ("last_name", "Last Name"), ("email", "Email"), ("phone", "Phone"))]
+
+
+def test_identity_questions_are_answered_from_the_profile_with_evidence(snapshot):
+    # Regression (2026-11-22, live run): First Name / Last Name / Email were reported as "missing
+    # information the candidate must provide" although the profile states them.
+    a = _answers(snapshot, IDENTITY_QS)
+    fact_ids = {f.fact_id for f in extract_facts(snapshot)}
+    assert a["email"]["status"] == "answered" and a["email"]["answer"] == "candidate@example.test"
+    assert (a["first_name"]["answer"], a["last_name"]["answer"]) == ("Test", "Candidate")
+    for k in ("email", "first_name", "last_name"):
+        assert a[k]["source"] == "candidate_fact" and a[k]["evidence_refs"] and set(a[k]["evidence_refs"]) <= fact_ids
+    assert a["phone"]["status"] == "unknown"  # the profile has no phone: asked, not invented
+
+
+def test_ambiguous_multiword_names_are_not_split(snapshot):
+    # "Nguyen Van An" has no safe first/last split, so the candidate is asked rather than guessed.
+    snapshot["profile"]["data"]["identity"]["fullName"] = "Nguyen Van An"
+    a = _answers(snapshot, IDENTITY_QS)
+    assert a["first_name"]["status"] == "unknown" and a["last_name"]["status"] == "unknown"
+    assert a["email"]["status"] == "answered"
+
+
+def test_standing_answers_still_win_over_derivation(snapshot):
+    snapshot["preferences"]["answers"]["email"] = "work@example.test"
+    assert _answers(snapshot, IDENTITY_QS)["email"]["answer"] == "work@example.test"
+
+
 def payload(job, snapshot, questions):
     return {"application_id": "app_1", "job": job, "candidate": snapshot, "snapshot_id": "c", "match": None, "questions": questions}
 

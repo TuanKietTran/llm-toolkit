@@ -85,9 +85,15 @@ func (a *AuthorizedAPIExecutor) Submit(ctx context.Context, req SubmitRequest) (
 		}
 	}
 	for _, ans := range req.Answers {
-		if ans.Status == "answered" && ans.Answer != nil {
-			_ = mw.WriteField(ans.QuestionID, *ans.Answer)
+		if ans.Status != "answered" || ans.Answer == nil {
+			continue
 		}
+		// Identity fields were written above; the text twin of an attachment slot only records that
+		// the file satisfies it, and its placeholder must never be sent as the resume text.
+		if fields[ans.QuestionID] != "" || strings.HasSuffix(ans.QuestionID, "_text") && strings.HasPrefix(*ans.Answer, "see attached") {
+			continue
+		}
+		_ = mw.WriteField(ans.QuestionID, *ans.Answer)
 	}
 	for _, d := range req.Documents {
 		field := map[string]string{"tailored_cv": "resume", "cover_letter": "cover_letter"}[d.Kind]

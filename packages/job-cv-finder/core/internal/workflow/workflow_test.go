@@ -90,6 +90,8 @@ func (f *fakeIntel) drain(ctx context.Context) int {
 			for _, q := range p.Questions {
 				if strings.Contains(strings.ToLower(q.Label), "notice") {
 					answers = append(answers, map[string]any{"question_id": q.ID, "status": "answered", "answer": "One month", "evidence_refs": []string{}, "source": "candidate_preference"})
+				} else if v, ok := map[string]string{"first_name": "Test", "last_name": "Candidate", "email": "candidate@example.test"}[q.ID]; ok {
+					answers = append(answers, map[string]any{"question_id": q.ID, "status": "answered", "answer": v, "evidence_refs": []string{}, "source": "candidate_preference"})
 				} else {
 					answers = append(answers, map[string]any{"question_id": q.ID, "status": "unknown", "answer": nil, "evidence_refs": []string{}, "source": "none"})
 				}
@@ -115,7 +117,9 @@ type harness struct {
 	srcID string
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessJobs(t, mockats.DemoJobs()) }
+
+func newHarnessJobs(t *testing.T, jobs []mockats.Job) *harness {
 	t.Helper()
 	ctx := context.Background()
 	st, err := store.OpenMemory(ctx)
@@ -123,7 +127,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	ats := mockats.New("acme", "Acme Payments", "candidate-key", mockats.DemoJobs())
+	ats := mockats.New("acme", "Acme Payments", "candidate-key", jobs)
 	srv := httptest.NewServer(ats)
 	t.Cleanup(srv.Close)
 	key := make([]byte, 32)
@@ -242,6 +246,58 @@ func TestEndToEndAutomatedSubmissionWithVerification(t *testing.T) {
 	h.settle()
 	if len(h.ats.Applications()) != 2 {
 		t.Fatal("duplicate submission after rediscovery")
+	}
+}
+
+// Regression (2026-11-22, live GitLab board): Greenhouse exposes every attachment as a file field
+// plus a paste-as-text twin, both required. Only the file was satisfied, so every Greenhouse
+// application stayed blocked on "Resume/CV" until the candidate pasted their resume into a form.
+func TestAttachmentTextTwinIsSatisfiedByTheAttachedFile(t *testing.T) {
+	h := newHarnessJobs(t, []mockats.Job{{
+		ID: 2001, Title: "Senior Backend Engineer (Go)", Location: "Ho Chi Minh City (Hybrid)",
+		Content: "&lt;h3&gt;Requirements&lt;/h3&gt;&lt;ul&gt;&lt;li&gt;Golang and PostgreSQL&lt;/li&gt;&lt;/ul&gt;",
+		Questions: []mockats.Question{
+			{Name: "first_name", Label: "First Name", Type: "input_text", Required: true},
+			{Name: "last_name", Label: "Last Name", Type: "input_text", Required: true},
+			{Name: "email", Label: "Email", Type: "input_text", Required: true},
+			{Name: "resume", Label: "Resume/CV", Type: "input_file", Required: true},
+			{Name: "resume_text", Label: "Resume/CV", Type: "textarea", Required: true},
+			{Name: "cover_letter", Label: "Cover Letter", Type: "input_file", Required: false},
+			{Name: "cover_letter_text", Label: "Cover Letter", Type: "textarea", Required: false},
+		},
+	}})
+	h.discover()
+	h.settle()
+	a := h.appFor("2001")
+	if a.State != domain.StateSubmitted {
+		t.Fatalf("state %s: %s / %s", a.State, deref(a.ExceptionReason), deref(a.LastError))
+	}
+	apps := h.ats.Applications()
+	if len(apps) != 1 || apps[0].Files["resume"] == 0 {
+		t.Fatalf("ATS received %+v", apps)
+	}
+	for k, v := range apps[0].Fields {
+		if strings.Contains(v, "see attached") {
+			t.Fatalf("placeholder %q leaked into form field %s", v, k)
+		}
+	}
+	if _, ok := apps[0].Fields["resume_text"]; ok {
+		t.Fatal("resume_text must not be sent when the file is attached")
+	}
+}
+
+// A job that only offers the text box has no file to satisfy it: it must still ask.
+func TestTextOnlyResumeStillAsks(t *testing.T) {
+	h := newHarnessJobs(t, []mockats.Job{{
+		ID: 2002, Title: "Senior Backend Engineer (Go)", Location: "Ho Chi Minh City (Hybrid)",
+		Content:   "&lt;h3&gt;Requirements&lt;/h3&gt;&lt;ul&gt;&lt;li&gt;Golang and PostgreSQL&lt;/li&gt;&lt;/ul&gt;",
+		Questions: []mockats.Question{{Name: "resume_text", Label: "Resume/CV", Type: "textarea", Required: true}},
+	}})
+	h.discover()
+	h.settle()
+	a := h.appFor("2002")
+	if a.State != domain.StateBlockedException || !strings.Contains(deref(a.ExceptionReason), "Resume/CV") {
+		t.Fatalf("state %s reason %q", a.State, deref(a.ExceptionReason))
 	}
 }
 

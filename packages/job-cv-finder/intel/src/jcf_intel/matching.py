@@ -2,7 +2,9 @@
 
 The score is a weighted sum over dimensions whose status is known. Unknown dimensions do not
 count for or against the score but lower confidence; partial job data (email alerts without a
-description) therefore yields low-confidence results instead of guessed ones.
+description) therefore yields low-confidence results instead of guessed ones. When the known
+dimensions carry less than MIN_EVIDENCE_WEIGHT of the total weight the score is discounted
+proportionally, and a job whose requirements could not be read is never recommended as a match.
 """
 
 from __future__ import annotations
@@ -24,6 +26,10 @@ WEIGHTS = {
     "compensation": 0.05,
     "career_preferences": 0.05,
 }
+
+# Known dimensions must carry at least this share of the total weight before the score is taken at
+# face value; below it the score is scaled down proportionally.
+MIN_EVIDENCE_WEIGHT = 0.35
 
 
 def _dim(status: str, score: float | None, note: str = "") -> dict[str, Any]:
@@ -161,15 +167,23 @@ def match(job: dict[str, Any], candidate: dict[str, Any], snapshot_id: str) -> d
 
     known = {k: d for k, d in dims.items() if d["score"] is not None}
     weight = sum(WEIGHTS[k] for k in known)
-    score = sum(WEIGHTS[k] * d["score"] for k, d in known.items()) / weight if weight else 0.0
+    raw = sum(WEIGHTS[k] * d["score"] for k, d in known.items()) / weight if weight else 0.0
+    # A score built on thin evidence must not read as a strong one. Renormalising over only the
+    # known dimensions turned a job whose sole known fact was a "senior" word in the title into
+    # 100%; discount the score in proportion to how little of the weight is actually known.
+    score = raw * min(1.0, weight / MIN_EVIDENCE_WEIGHT)
     confidence = weight / sum(WEIGHTS.values())
     if job.get("completeness") == "partial":
         confidence *= 0.6
+    requirements_known = dims["required_skills"]["score"] is not None
 
     hard_fail = excluded or dims["location"]["status"] == "unmet" or dims["work_mode"]["status"] == "unmet"
     eligibility = "ineligible" if hard_fail else ("uncertain" if confidence < 0.5 else "eligible")
     if hard_fail or score < 0.35:
         rec = "no_match"
+    elif not requirements_known:
+        # Without knowing what the job requires, no amount of other agreement makes it a match.
+        rec = "weak_match"
     elif score >= 0.8 and confidence >= 0.6:
         rec = "strong_match"
     elif score >= 0.6:
