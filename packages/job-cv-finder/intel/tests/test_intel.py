@@ -2,6 +2,7 @@ import json
 from datetime import date
 
 import httpx
+import pytest
 
 from jcf_intel.facts import extract_facts, parse_month
 from jcf_intel.lexicon import find_skills
@@ -207,7 +208,94 @@ class HonestModel:
     def complete(self, system, user):
         start = user.index("[")
         stmts = json.loads(user[start:user.index("\n", start)])
-        return json.dumps({"paragraphs": ["Dear team,", stmts[0]["text"]], "statements": [{"text": stmts[0]["text"], "evidence_refs": stmts[0]["ids"]}]})
+        return json.dumps({"paragraphs": ["Dear team,", stmts[0]["text"]], "statements": [{"text": stmts[0]["text"], "evidence_refs": [stmts[0]["ref"]]}]})
+
+
+class RaisingModel:
+    name, model_id = "fake", "fake-3"
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def complete(self, system, user):
+        raise self.exc
+
+
+class FixedModel:
+    name, model_id = "fake", "fake-4"
+
+    def __init__(self, text):
+        self.text = text
+
+    def complete(self, system, user):
+        return self.text
+
+
+@pytest.mark.parametrize("model, reason", [
+    (RaisingModel(httpx.ReadTimeout("slow")), "timeout"),
+    (RaisingModel(httpx.ConnectError("refused")), "provider_error"),
+    (FixedModel("I cannot help with that."), "malformed_output"),
+])
+def test_model_fallback_is_never_silent(snapshot, job, model, reason, caplog):
+    # Regression (2026-11-22, live run): a 60 s timeout silently turned every reasoning-model call into
+    # the template, with "completed" in the log and nothing in the result to say the model failed.
+    r = prepare(payload(job, snapshot, []), model)
+    assert r["engine"]["model_provider"] is None
+    assert r["engine"]["prompt_version"] == f"template.v1 (model fallback: {reason})"
+    assert r["validation"]["passed"] and any(reason in rec.message for rec in caplog.records)
+
+
+def test_model_letter_keeps_the_deterministic_frame(snapshot, job):
+    r = prepare(payload(job, snapshot, []), HonestModel())
+    letter = next(d for d in r["documents"] if d["kind"] == "cover_letter")
+    assert letter["content"].startswith("Dear Hiring Team," + chr(10) * 2 + "I am applying for the Senior Backend Engineer (Go) role at Acme.")
+    assert letter["content"].rstrip().endswith("Kind regards," + chr(10) + "Test Candidate")
+    assert r["engine"]["prompt_version"] == "cover-letter.v2"
+
+
+class LabelOnlyModel:
+    """Cites by label, and once by an invented label; the invented one must be rejected."""
+    name, model_id = "fake", "fake-5"
+
+    def __init__(self, label):
+        self.label = label
+
+    def complete(self, system, user):
+        start = user.index("[")
+        stmts = json.loads(user[start:user.index(chr(10), start)])
+        return json.dumps({"paragraphs": [stmts[0]["text"]], "statements": [{"text": stmts[0]["text"], "evidence_refs": [self.label]}]})
+
+
+def test_model_cites_short_labels_that_map_back_to_real_fact_ids(snapshot, job, check):
+    # Regression (2026-11-22, live run): the model mistyped opaque fact ids ("unknown_ref") and a valid
+    # letter was discarded. Labels S1..Sn are mapped back to the real ids in code.
+    r = prepare(payload(job, snapshot, []), LabelOnlyModel("S1"))
+    check("prepare-result.schema.json", r)
+    letter = next(d for d in r["documents"] if d["kind"] == "cover_letter")
+    fact_ids = {f.fact_id for f in extract_facts(snapshot)}
+    assert r["engine"]["model_id"] == "fake-5" and letter["statements"][0]["evidence_refs"]
+    assert set(letter["statements"][0]["evidence_refs"]) <= fact_ids  # real ids, never the label
+
+    bad = prepare(payload(job, snapshot, []), LabelOnlyModel("S99"))
+    assert bad["engine"]["prompt_version"] == "template.v1 (model fallback: failed_validation)"
+
+
+def test_model_letter_keeps_the_honest_gap_sentence(snapshot, job):
+    job["required_skills"] = ["Go", "Rust"]
+    r = prepare(payload(job, snapshot, []), HonestModel())
+    letter = next(d for d in r["documents"] if d["kind"] == "cover_letter")
+    assert r["engine"]["model_id"] == "fake-2"
+    assert "Rust, which my CV does not show" in letter["content"]
+    assert not any("Rust" in st["text"] for st in letter["statements"]) and r["validation"]["passed"]
+
+
+def test_model_timeout_is_configurable_and_bounded(monkeypatch):
+    from jcf_intel import llm
+
+    monkeypatch.setenv("JCF_MODEL_BASE_URL", "http://x"); monkeypatch.setenv("JCF_MODEL_ID", "m")
+    assert llm.from_env().timeout == 150.0
+    monkeypatch.setenv("JCF_MODEL_TIMEOUT", "90"); assert llm.from_env().timeout == 90.0
+    monkeypatch.setenv("JCF_MODEL_TIMEOUT", "99999"); assert llm.from_env().timeout == 280.0  # below the 300 s task lease
 
 
 def test_model_output_is_validated_and_injection_is_inert(snapshot, job, check):
@@ -217,7 +305,7 @@ def test_model_output_is_validated_and_injection_is_inert(snapshot, job, check):
     check("prepare-result.schema.json", r)
     letter = next(d for d in r["documents"] if d["kind"] == "cover_letter")
     assert "Rust" not in letter["content"]  # fabricated output discarded, template used
-    assert r["engine"]["model_provider"] is None and r["engine"]["prompt_version"] == "template.v1"
+    assert r["engine"]["model_provider"] is None and r["engine"]["prompt_version"] == "template.v1 (model fallback: failed_validation)"
     assert "untrusted data" in m.seen and ">>> end" not in m.seen  # delimiter cannot be closed early
 
     r2 = prepare(payload(job, snapshot, []), HonestModel())

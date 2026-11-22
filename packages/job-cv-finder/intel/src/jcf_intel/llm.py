@@ -42,7 +42,9 @@ class OpenAICompatibleProvider:
     model_id: str
     api_key: str = ""
     name: str = "openai-compatible"
-    timeout: float = 60.0
+    # Reasoning models spend a minute or more thinking; 60 s silently made every call fall back to the
+    # template. Must stay below the task lease (300 s).
+    timeout: float = 150.0
 
     def complete(self, system: str, user: str) -> str:
         headers = {"Content-Type": "application/json"}
@@ -63,7 +65,8 @@ def from_env() -> ModelProvider:
     """JCF_MODEL_BASE_URL + JCF_MODEL_ID (+ JCF_MODEL_API_KEY) select a provider; unset means none."""
     base, model = os.environ.get("JCF_MODEL_BASE_URL", ""), os.environ.get("JCF_MODEL_ID", "")
     if base and model:
-        return OpenAICompatibleProvider(base_url=base, model_id=model, api_key=os.environ.get("JCF_MODEL_API_KEY", ""))
+        timeout = float(os.environ.get("JCF_MODEL_TIMEOUT", "") or 150.0)
+        return OpenAICompatibleProvider(base_url=base, model_id=model, api_key=os.environ.get("JCF_MODEL_API_KEY", ""), timeout=min(max(timeout, 5.0), 280.0))
     return NullProvider()
 
 

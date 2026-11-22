@@ -11,15 +11,19 @@ Rules enforced here (and re-checked by Go):
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
+
+import httpx
 
 from . import ENGINE_NAME, ENGINE_VERSION
 from .facts import Fact, extract_facts, skills_with_evidence
 from .lexicon import find_skills
 from .llm import ModelProvider, NullProvider, data_block
 
-PROMPT_VERSION = "cover-letter.v1"
+PROMPT_VERSION = "cover-letter.v2"
+log = logging.getLogger("jcf_intel")
 
 
 # ------------------------------------------------------------------ CV selection
@@ -126,26 +130,54 @@ def template_cover_letter(job: dict[str, Any], cv: dict[str, Any], facts: list[F
 
 
 def model_cover_letter(provider: ModelProvider, job: dict[str, Any], cv: dict[str, Any], base: dict[str, Any], facts: list[Fact]) -> dict[str, Any] | None:
+    """Compatibility wrapper: the document, or None when the template should be used."""
+    return try_model_cover_letter(provider, job, cv, base, facts)[0]
+
+
+def try_model_cover_letter(provider: ModelProvider, job: dict[str, Any], cv: dict[str, Any], base: dict[str, Any], facts: list[Fact]) -> tuple[dict[str, Any] | None, str | None]:
     """Ask a model to rephrase the template using ONLY the evidenced statements.
-    Returns None (template is used) if output is malformed or fails validation."""
-    allowed = [{"ids": st["evidence_refs"], "text": st["text"]} for st in base["statements"]]
+    Returns (document, None), or (None, reason) when the template must be used. The reason is one of
+    timeout, provider_error, malformed_output, failed_validation: a fallback is never silent."""
+    # Models mistype opaque 16-character fact ids (observed live: "unknown_ref"), so they cite short
+    # labels S1..Sn which are mapped back to the real ids here; an unknown label stays unknown and is
+    # rejected by validation.
+    label_ids = {f"S{i + 1}": st["evidence_refs"] for i, st in enumerate(base["statements"])}
+    allowed = [{"ref": f"S{i + 1}", "text": st["text"]} for i, st in enumerate(base["statements"])]
     system = ("You write concise, honest cover letters. Use ONLY the candidate statements provided, each may be "
               "rephrased but not extended. Do not add skills, employers, numbers, dates or achievements. "
-              "Return JSON: {\"paragraphs\": [str], \"statements\": [{\"text\": str, \"evidence_refs\": [id]}]} where every "
-              "sentence about the candidate appears in statements with the ids of the statement it is based on.")
+              "Return JSON: {\"paragraphs\": [str], \"statements\": [{\"text\": str, \"evidence_refs\": [ref]}]} where every "
+              "sentence about the candidate appears in statements with the ref labels (such as \"S1\") of the statement it is based on. "
+              "Do not write a greeting, an opening sentence about the role, or a sign-off: they are added for you.")
     user = (f"Role: {job['title']} at {job['company']}\nCandidate statements (trusted): {json.dumps(allowed)}\n"
             + data_block("JOB DESCRIPTION", (job.get("description") or "")[:6000]))
     try:
         raw = provider.complete(system, user)
+    except httpx.TimeoutException:
+        return None, "timeout"
+    except Exception:  # noqa: BLE001 - connection refused, 5xx, anything else the provider raises
+        return None, "provider_error"
+    try:
         m = re.search(r"\{.*\}", raw, re.S)
         data = json.loads(m.group(0) if m else raw)
         paragraphs = [str(p) for p in data["paragraphs"]][:8]
-        statements = [{"text": str(s["text"])[:2000], "evidence_refs": [str(r) for r in s["evidence_refs"]][:20]} for s in data["statements"]]
+        statements = [{"text": str(s["text"])[:2000],
+                       "evidence_refs": [i for r in s["evidence_refs"][:20] for i in label_ids.get(str(r).strip(), [str(r)])]}
+                      for s in data["statements"]]
     except Exception:  # noqa: BLE001 - any malformed output falls back to the template
-        return None
-    doc = dict(base, content="\n\n".join(paragraphs).strip() + "\n", statements=statements)
+        return None, "malformed_output"
+    # The model writes the body only; the salutation, opening and sign-off stay deterministic.
+    who = _fact_of(facts, "identity")
+    # The template's honest gap sentence is deterministic and evidence-safe, so it is kept verbatim.
+    gap = [ln for ln in base["content"].splitlines() if "does not show" in ln]
+    content = (f"Dear Hiring Team,\n\nI am applying for the {job['title']} role at {job['company']}.\n\n"
+               + "\n\n".join(paragraphs + gap).strip() + f"\n\nKind regards,\n{who.value if who else ''}\n")
+    doc = dict(base, content=content, statements=statements)
     issues = validate_document(doc, facts)
-    return None if issues else doc
+    if issues:
+        # Codes only, never model text: the output may quote candidate data.
+        log.warning("model cover letter rejected by evidence validation: %s", ", ".join(sorted({i["code"] for i in issues})))
+        return None, "failed_validation"
+    return doc, None
 
 
 # ------------------------------------------------------------------ validation
@@ -251,11 +283,13 @@ def prepare(payload: dict[str, Any], provider: ModelProvider | None = None) -> d
     cv, selected = select_cv(cand["cvs"], job)
     docs = [tailor(cv, job, facts)]
     letter = template_cover_letter(job, cv, facts, payload.get("match"))
-    used_model = False
+    used_model, fallback = False, None
     if not isinstance(provider, NullProvider):
-        better = model_cover_letter(provider, job, cv, letter, facts)
+        better, fallback = try_model_cover_letter(provider, job, cv, letter, facts)
         if better is not None:
             letter, used_model = better, True
+        else:
+            log.warning("model cover letter not used (%s) for job %s; template used instead", fallback, job.get("job_id"))
     docs.append(letter)
     issues = [i for d in docs for i in validate_document(d, facts)]
     return {
@@ -267,5 +301,5 @@ def prepare(payload: dict[str, Any], provider: ModelProvider | None = None) -> d
         "engine": {"name": ENGINE_NAME, "version": ENGINE_VERSION,
                    "model_provider": provider.name if used_model else None,
                    "model_id": provider.model_id if used_model else None,
-                   "prompt_version": PROMPT_VERSION if used_model else "template.v1"},
+                   "prompt_version": PROMPT_VERSION if used_model else ("template.v1" + (f" (model fallback: {fallback})" if fallback else ""))},
     }
