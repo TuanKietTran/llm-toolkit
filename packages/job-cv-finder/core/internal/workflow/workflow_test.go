@@ -321,6 +321,9 @@ func TestResendingSnapshotReevaluatesWaitingApplicationsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if sum.Rematched != 2 { // 1002 (not selected) and 1003 (blocked); 1001 is submitted
+		t.Fatalf("rematched %d applications, want 2", sum.Rematched)
+	}
 	h.settle()
 	for _, id := range []string{"1002", "1003"} {
 		if a := h.appFor(id); a.SnapshotID != sum.ID {

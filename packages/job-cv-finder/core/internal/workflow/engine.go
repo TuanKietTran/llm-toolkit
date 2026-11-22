@@ -91,6 +91,8 @@ func (e *Engine) Wake() {
 type SnapshotSummary struct {
 	store.CandidateSnapshot
 	NewApplications int `json:"new_applications"`
+	// Rematched counts existing applications re-evaluated against this snapshot.
+	Rematched int `json:"rematched"`
 }
 
 // IngestCandidateSnapshot validates and stores a Ruxt snapshot, then starts matching for
@@ -128,7 +130,9 @@ func (e *Engine) IngestCandidateSnapshot(ctx context.Context, raw []byte) (Snaps
 			out.NewApplications++
 		}
 	}
-	if err := e.rematchStale(ctx, snap.ID); err != nil {
+	n, err := e.rematchStale(ctx, snap.ID)
+	out.Rematched = n
+	if err != nil {
 		return out, err
 	}
 	e.Wake()
@@ -139,22 +143,23 @@ func (e *Engine) IngestCandidateSnapshot(ctx context.Context, raw []byte) (Snaps
 // candidate or were judged below the threshold. Without it, editing a CV, a profile or the
 // standing answers and sending again changed nothing for jobs already discovered. Anything that
 // ever started a submission attempt is left alone: restarting it could submit twice.
-func (e *Engine) rematchStale(ctx context.Context, snapshotID string) error {
+func (e *Engine) rematchStale(ctx context.Context, snapshotID string) (int, error) {
 	apps, err := e.Store.ListApplications(ctx, []domain.AppState{domain.StateMatched, domain.StateNotSelected, domain.StateBlockedException}, 1000)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	done := 0
 	for _, a := range apps {
 		if a.SnapshotID == snapshotID {
 			continue
 		}
 		if ran, err := e.Store.HasExecutionRun(ctx, a.ID); err != nil {
-			return err
+			return done, err
 		} else if ran {
 			continue
 		}
 		if j, err := e.Store.GetJob(ctx, a.JobID); err != nil {
-			return err
+			return done, err
 		} else if j.Status == "expired" {
 			continue
 		}
@@ -164,10 +169,11 @@ func (e *Engine) rematchStale(ctx context.Context, snapshotID string) error {
 			if errors.As(err, &ve) || errors.Is(err, store.ErrConflict) {
 				continue // moved on concurrently; the next snapshot or tick will see it
 			}
-			return err
+			return done, err
 		}
+		done++
 	}
-	return nil
+	return done, nil
 }
 
 // ValidationError marks bad input (HTTP 400/422), as opposed to internal failures.
