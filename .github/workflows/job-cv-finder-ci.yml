@@ -1,0 +1,109 @@
+name: job-cv-finder CI
+
+# Tests and static checks. No AWS access: this workflow never assumes a role, so it is safe on
+# pull requests and from forks. The deploy workflow calls it before it touches AWS.
+on:
+  pull_request:
+    paths:
+      - "packages/job-cv-finder/**"
+      - ".github/workflows/job-cv-finder-*.yml"
+  push:
+    branches-ignore: [main]
+    paths:
+      - "packages/job-cv-finder/**"
+      - ".github/workflows/job-cv-finder-*.yml"
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: packages/job-cv-finder
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: packages/job-cv-finder/core/go.mod
+          cache-dependency-path: packages/job-cv-finder/core/go.sum
+      - name: Format, vet, build
+        working-directory: packages/job-cv-finder/core
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "gofmt needed"; exit 1; }
+          go vet ./...
+          go build ./...
+      - name: Tests (race detector)
+        working-directory: packages/job-cv-finder/core
+        run: go test -race -count=1 ./...
+      - name: govulncheck
+        working-directory: packages/job-cv-finder/core
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.10.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      - name: Tests
+        working-directory: packages/job-cv-finder/intel
+        run: |
+          uv sync --frozen
+          uv run pytest -q
+      - name: Dependency audit (locked runtime requirements)
+        working-directory: packages/job-cv-finder/intel
+        run: uvx pip-audit==2.10.1 --require-hashes --disable-pip -r requirements.lock
+
+  e2e:
+    needs: [go, python]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: packages/job-cv-finder/core/go.mod
+          cache-dependency-path: packages/job-cv-finder/core/go.sum
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      - name: Cross-process end to end (core + mock ATS + worker)
+        run: bash scripts/e2e.sh
+
+  infra:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.5
+          terraform_wrapper: false
+      - name: Terraform fmt and validate (no backend, no credentials)
+        working-directory: packages/job-cv-finder/deploy/aws/terraform
+        run: |
+          terraform fmt -check -recursive
+          terraform init -backend=false -input=false
+          terraform validate
+      - name: Shell scripts
+        run: |
+          shellcheck --severity=warning deploy/aws/host/*.sh
+          bash -n deploy/aws/host/deploy.sh
+      - name: Static analysis of IaC, Dockerfiles and secrets (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: packages/job-cv-finder
+          scanners: misconfig,secret
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          skip-dirs: intel/.venv

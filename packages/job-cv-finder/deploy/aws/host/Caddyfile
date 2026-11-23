@@ -1,0 +1,24 @@
+# Caddy terminates TLS (Let's Encrypt, HTTP-01) and exposes only what Ruxt and health checks need.
+# /metrics (unauthenticated) and /internal/* (worker API) never leave the host.
+{$JCF_HOSTNAME} {
+	encode zstd gzip
+
+	@private path /metrics /metrics/* /internal /internal/*
+	respond @private 404
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+
+	# flush_interval -1 keeps the SSE event stream live.
+	reverse_proxy core:8790 {
+		flush_interval -1
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

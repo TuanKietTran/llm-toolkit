@@ -1,0 +1,279 @@
+name: job-cv-finder deploy (AWS)
+
+# Test -> Terraform plan/apply -> build and scan images -> deploy through SSM -> verify.
+# Every AWS job runs in the `aws-prod` GitHub environment, the only subject the deploy role trusts.
+# Credentials come from GitHub OIDC; there are no long-lived AWS keys.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/job-cv-finder/**"
+      - ".github/workflows/job-cv-finder-*.yml"
+  workflow_dispatch:
+    inputs:
+      skip_public_check:
+        description: "Skip the public HTTPS check (use only before DNS exists)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: job-cv-finder-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PKG: packages/job-cv-finder
+
+jobs:
+  test:
+    uses: ./.github/workflows/job-cv-finder-ci.yml
+
+  infra:
+    needs: test
+    runs-on: ubuntu-24.04
+    environment: aws-prod
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      instance_id: ${{ steps.out.outputs.instance_id }}
+      public_ip: ${{ steps.out.outputs.public_ip }}
+      hostname: ${{ steps.out.outputs.hostname }}
+      ecr_core: ${{ steps.out.outputs.ecr_core }}
+      ecr_intel: ${{ steps.out.outputs.ecr_intel }}
+      backup_bucket: ${{ steps.out.outputs.backup_bucket }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: jcf-infra-${{ github.run_id }}
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.5
+          terraform_wrapper: false
+      - name: Identity check
+        run: |
+          aws sts get-caller-identity --query Arn --output text | sed -E 's/[0-9]{12}/<account>/'
+      - name: Terraform init
+        working-directory: ${{ env.PKG }}/deploy/aws/terraform
+        run: |
+          acct=$(aws sts get-caller-identity --query Account --output text)
+          terraform init -input=false -backend-config="bucket=lab-tfstate-${acct}-${AWS_REGION}"
+      - name: Terraform plan
+        working-directory: ${{ env.PKG }}/deploy/aws/terraform
+        env:
+          TF_VAR_api_token: ${{ secrets.JCF_API_TOKEN }}
+          TF_VAR_hostname: ${{ vars.JCF_HOSTNAME }}
+          TF_VAR_greenhouse_boards: ${{ vars.JCF_GREENHOUSE_BOARDS }}
+          TF_VAR_lever_sites: ${{ vars.JCF_LEVER_SITES }}
+        run: terraform plan -input=false -no-color -out=tfplan
+      - name: Terraform apply
+        working-directory: ${{ env.PKG }}/deploy/aws/terraform
+        run: terraform apply -input=false -no-color tfplan
+      - name: Outputs
+        id: out
+        working-directory: ${{ env.PKG }}/deploy/aws/terraform
+        run: |
+          for k in instance_id public_ip hostname ecr_core ecr_intel backup_bucket; do
+            echo "$k=$(terraform output -raw $k)" >> "$GITHUB_OUTPUT"
+          done
+          {
+            echo "### Infrastructure"
+            echo "- instance: \`$(terraform output -raw instance_id)\`"
+            echo "- public IP: \`$(terraform output -raw public_ip)\` (DNS-only A record for \`$(terraform output -raw hostname)\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  images:
+    needs: infra
+    runs-on: ubuntu-24.04-arm
+    environment: aws-prod
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: jcf-images-${{ github.run_id }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Tag
+        id: tag
+        run: echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - name: Registry login
+        env:
+          REGISTRY: ${{ needs.infra.outputs.ecr_core }}
+        run: aws ecr get-login-password | docker login --username AWS --password-stdin "${REGISTRY%%/*}"
+      - name: Build images
+        run: |
+          set -euo pipefail
+          for name in core intel; do
+            docker buildx build --platform linux/arm64 --load -t "jcf-$name:scan"               -f "$PKG/deploy/docker/$name.Dockerfile" "$PKG"
+          done
+      - name: Scan core image (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: jcf-core:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Scan worker image (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: jcf-intel:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Push
+        env:
+          CORE_REPO: ${{ needs.infra.outputs.ecr_core }}
+          INTEL_REPO: ${{ needs.infra.outputs.ecr_intel }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          for name in core intel; do
+            repo=$([ "$name" = core ] && echo "$CORE_REPO" || echo "$INTEL_REPO")
+            if aws ecr describe-images --repository-name "jcf-$name" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+              echo "jcf-$name:$TAG is already in the registry (tags are immutable), not pushing again"
+              continue
+            fi
+            docker tag "jcf-$name:scan" "$repo:$TAG"
+            docker push "$repo:$TAG"
+          done
+
+  deploy:
+    needs: [infra, images]
+    runs-on: ubuntu-24.04
+    environment: aws-prod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: jcf-deploy-${{ github.run_id }}
+      - name: Wait for the host's SSM agent
+        env:
+          IID: ${{ needs.infra.outputs.instance_id }}
+        run: |
+          for i in $(seq 1 60); do
+            st=$(aws ssm describe-instance-information --filters "Key=InstanceIds,Values=$IID" --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || true)
+            [ "$st" = Online ] && { echo "SSM agent online"; exit 0; }
+            sleep 10
+          done
+          echo "SSM agent never came online"; exit 1
+      - name: Deploy release
+        env:
+          IID: ${{ needs.infra.outputs.instance_id }}
+          CORE_IMAGE: ${{ needs.infra.outputs.ecr_core }}:${{ needs.images.outputs.tag }}
+          INTEL_IMAGE: ${{ needs.infra.outputs.ecr_intel }}:${{ needs.images.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bundle=$(tar -C "$PKG/deploy/aws/host" -czf - docker-compose.yml Caddyfile deploy.sh backup.sh restore.sh jcf-backup.service jcf-backup.timer | base64 -w0)
+          jq -n --arg b "$bundle" --arg core "$CORE_IMAGE" --arg intel "$INTEL_IMAGE" '{commands: [
+            "set -euo pipefail",
+            "cloud-init status --wait >/dev/null 2>&1 || true",
+            "test -f /opt/jcf/host.env",
+            "install -d -m 0755 /opt/jcf",
+            ("echo " + $b + " | base64 -d | tar -xzC /opt/jcf"),
+            ("CORE_IMAGE=" + $core + " INTEL_IMAGE=" + $intel + " bash /opt/jcf/deploy.sh")
+          ], executionTimeout: ["1500"]}' > params.json
+          cid=$(aws ssm send-command --instance-ids "$IID" --document-name AWS-RunShellScript \
+            --comment "jcf deploy ${GITHUB_SHA::12}" --parameters file://params.json \
+            --query Command.CommandId --output text)
+          echo "command $cid"
+          for i in $(seq 1 120); do
+            st=$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$IID" --query Status --output text 2>/dev/null || echo Pending)
+            case "$st" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 10
+          done
+          aws ssm get-command-invocation --command-id "$cid" --instance-id "$IID" --query StandardOutputContent --output text
+          err=$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$IID" --query StandardErrorContent --output text)
+          [ -z "$err" ] || { echo "--- stderr"; echo "$err" | tail -40; }
+          echo "final status: $st"
+          [ "$st" = Success ]
+
+  verify:
+    needs: [infra, images, deploy]
+    runs-on: ubuntu-24.04
+    environment: aws-prod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: jcf-verify-${{ github.run_id }}
+      - name: Host checks, backup and restore verification
+        env:
+          IID: ${{ needs.infra.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+          cat > params.json <<'JSON'
+          {"commands": [
+            "set -euo pipefail",
+            "echo '== containers'; docker ps --format '{{.Names}} {{.Status}}'",
+            "echo '== health'; for c in $(docker ps -q); do docker inspect -f '{{.Name}} {{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' $c; done",
+            "echo '== data volume'; findmnt -no SOURCE,FSTYPE,SIZE /var/lib/jcf; ls -l /var/lib/jcf | head",
+            "echo '== backup'; JCF_BACKUP_LABEL=verify /usr/local/sbin/jcf-backup",
+            "echo '== restore verification (scratch copy, production untouched)'; /usr/local/sbin/jcf-restore verify",
+            "echo '== timer'; systemctl list-timers jcf-backup.timer --no-pager | head -3"
+          ], "executionTimeout": ["600"]}
+          JSON
+          cid=$(aws ssm send-command --instance-ids "$IID" --document-name AWS-RunShellScript --parameters file://params.json --query Command.CommandId --output text)
+          for i in $(seq 1 60); do
+            st=$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$IID" --query Status --output text 2>/dev/null || echo Pending)
+            case "$st" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 5
+          done
+          out=$(aws ssm get-command-invocation --command-id "$cid" --instance-id "$IID" --query StandardOutputContent --output text)
+          echo "$out"
+          { echo "### Host verification"; echo '```'; echo "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$st" = Success ]
+      - name: Public HTTPS smoke test
+        if: ${{ !inputs.skip_public_check }}
+        env:
+          HOST: ${{ needs.infra.outputs.hostname }}
+          IP: ${{ needs.infra.outputs.public_ip }}
+          API_TOKEN: ${{ secrets.JCF_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "DNS: $(getent hosts "$HOST" | awk '{print $1}' | head -1) (expected $IP)"
+          for i in $(seq 1 40); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "https://$HOST/readyz" 2>/dev/null || true)
+            [ "$code" = 200 ] && break
+            echo "attempt $i: https readyz -> ${code:-none}"; sleep 15
+          done
+          [ "$code" = 200 ] || { echo "HTTPS readiness never reached 200"; exit 1; }
+          echo "== certificate"
+          echo | openssl s_client -connect "$HOST:443" -servername "$HOST" 2>/dev/null | openssl x509 -noout -issuer -subject -dates
+          echo "== http redirects to https"
+          curl -sS -o /dev/null -w '%{http_code} -> %{redirect_url}\n' "http://$HOST/readyz"
+          echo "== private routes are not public"
+          for p in /metrics /internal/v1/tasks/lease; do curl -sS -o /dev/null -w "$p -> %{http_code}\n" "https://$HOST$p"; done
+          echo "== API requires a token"
+          curl -sS -o /dev/null -w 'no token -> %{http_code}\n' "https://$HOST/api/v1/integration/health"
+          curl -sS -o /dev/null -w 'with token -> %{http_code}\n' -H "Authorization: Bearer $API_TOKEN" "https://$HOST/api/v1/integration/health"

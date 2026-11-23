@@ -1,0 +1,68 @@
+# Job CV Finder on one host. Images and env come from /opt/jcf (written by deploy.sh).
+# Only Caddy publishes ports; the core and worker talk over the private compose network.
+# The worker receives only its own token; the API token and the credential key stay in the core.
+name: jcf
+
+services:
+  caddy:
+    image: ${CADDY_IMAGE}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      JCF_HOSTNAME: ${JCF_HOSTNAME}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      core:
+        condition: service_healthy
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: /jcf/app
+        awslogs-create-group: "false"
+        tag: caddy-{{.ID}}
+
+  core:
+    image: ${CORE_IMAGE}
+    restart: unless-stopped
+    env_file: /opt/jcf/core.env
+    environment:
+      JCF_ADDR: 0.0.0.0:8790
+      JCF_DB: /var/lib/jcf/jcf.db
+    volumes:
+      - /var/lib/jcf:/var/lib/jcf
+    stop_grace_period: 30s
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: /jcf/app
+        awslogs-create-group: "false"
+        tag: core-{{.ID}}
+
+  intel:
+    image: ${INTEL_IMAGE}
+    restart: unless-stopped
+    env_file: /opt/jcf/worker.env
+    environment:
+      JCF_CORE_URL: http://core:8790
+    depends_on:
+      core:
+        condition: service_healthy
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${AWS_REGION}
+        awslogs-group: /jcf/app
+        awslogs-create-group: "false"
+        tag: intel-{{.ID}}
+
+volumes:
+  caddy_data:
+  caddy_config:

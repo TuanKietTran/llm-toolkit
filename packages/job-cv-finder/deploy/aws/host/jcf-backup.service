@@ -1,0 +1,8 @@
+[Unit]
+Description=Job CV Finder SQLite backup to S3
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/jcf-backup
