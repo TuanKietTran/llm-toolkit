@@ -1,0 +1,60 @@
+name: job-cv-finder power (start / stop / status)
+
+# The AWS host is on demand, not always on. Stopping keeps the data volume, snapshots, backups and the
+# Elastic IP, so a start brings the same containers and database back (restart policy unless-stopped).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to do with the jcf host"
+        type: choice
+        options: [status, start, stop]
+        default: status
+
+concurrency:
+  group: job-cv-finder-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  power:
+    runs-on: ubuntu-24.04
+    environment: aws-prod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: jcf-power-${{ github.run_id }}
+      - name: Apply the requested power action
+        env:
+          ACTION: ${{ inputs.action }}
+          HOST: ${{ vars.JCF_HOSTNAME }}
+        run: |
+          set -euo pipefail
+          hosts() { aws ec2 describe-instances --filters Name=tag:Project,Values=jcf Name=tag:Name,Values=jcf-host Name=instance-state-name,Values=pending,running,stopping,stopped --query 'Reservations[].Instances[].InstanceId' --output text; }
+          IID=$(hosts); [ -n "$IID" ] && [ "$(echo "$IID" | wc -w)" = 1 ] || { echo "expected exactly one jcf host, found: '$IID'"; exit 1; }
+          state() { aws ec2 describe-instances --instance-ids "$IID" --query 'Reservations[0].Instances[0].State.Name' --output text; }
+          echo "instance $IID is $(state)"
+          case "$ACTION" in
+            stop)
+              aws ec2 stop-instances --instance-ids "$IID" >/dev/null
+              aws ec2 wait instance-stopped --instance-ids "$IID" ;;
+            start)
+              aws ec2 start-instances --instance-ids "$IID" >/dev/null
+              aws ec2 wait instance-running --instance-ids "$IID"
+              for i in $(seq 1 40); do
+                code=$(curl -sS -o /dev/null -w '%{http_code}' "https://$HOST/readyz" 2>/dev/null || true)
+                [ "$code" = 200 ] && break; echo "waiting for the service: ${code:-none}"; sleep 15
+              done
+              [ "$code" = 200 ] || { echo "service did not come back"; exit 1; } ;;
+            status) ;;
+          esac
+          echo "instance $IID is now $(state)"
+          echo "### Power: $ACTION" >> "$GITHUB_STEP_SUMMARY"
+          echo "instance state: \`$(state)\`" >> "$GITHUB_STEP_SUMMARY"
