@@ -413,8 +413,10 @@ resource "aws_instance" "host" {
 
   lifecycle {
     # The AMI alias moves forward over time and user data is applied on first boot only;
-    # neither may replace a host that holds production data.
-    ignore_changes = [ami, user_data]
+    # neither may replace a host that holds production data. volume_tags only matters at launch: the
+    # provider reads it back from every attached volume (including the data volume, which has its own
+    # tags), so leaving it managed would retag the data volume and drop its snapshot-policy tag.
+    ignore_changes = [ami, user_data, volume_tags]
   }
 }
 
