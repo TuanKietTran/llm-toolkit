@@ -44,6 +44,7 @@ jobs:
       ecr_core: ${{ steps.out.outputs.ecr_core }}
       ecr_intel: ${{ steps.out.outputs.ecr_intel }}
       backup_bucket: ${{ steps.out.outputs.backup_bucket }}
+      was_stopped: ${{ steps.power.outputs.was_stopped }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,6 +58,12 @@ jobs:
         with:
           terraform_version: 1.15.5
           terraform_wrapper: false
+      - name: Remember whether the host is stopped (it is on demand)
+        id: power
+        run: |
+          st=$(aws ec2 describe-instances --filters Name=tag:Project,Values=jcf Name=tag:Name,Values=jcf-host Name=instance-state-name,Values=pending,running,stopping,stopped --query 'Reservations[].Instances[].State.Name' --output text)
+          echo "host state before this run: ${st:-none}"
+          [ "$st" = stopped ] && echo "was_stopped=true" >> "$GITHUB_OUTPUT" || echo "was_stopped=false" >> "$GITHUB_OUTPUT"
       - name: Identity check
         run: |
           aws sts get-caller-identity --query Arn --output text | sed -E 's/[0-9]{12}/<account>/'
@@ -170,6 +177,13 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: jcf-deploy-${{ github.run_id }}
+      - name: Start the host if it was stopped
+        if: ${{ needs.infra.outputs.was_stopped == 'true' }}
+        env:
+          IID: ${{ needs.infra.outputs.instance_id }}
+        run: |
+          aws ec2 start-instances --instance-ids "$IID" >/dev/null
+          aws ec2 wait instance-running --instance-ids "$IID"
       - name: Wait for the host's SSM agent
         env:
           IID: ${{ needs.infra.outputs.instance_id }}
@@ -346,3 +360,27 @@ jobs:
           echo "$out" | grep -q PERSISTENCE_OK
           code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $API_TOKEN" "https://$HOST/api/v1/jobs")
           echo "API after restart: $code"; [ "$code" = 200 ]
+
+  restore-power:
+    # The host is on demand: if it was stopped when this run began, put it back to stopped, even when
+    # an earlier job failed, so a push never leaves it running (and billing) by accident.
+    needs: [infra, deploy, verify, journey]
+    if: ${{ always() && needs.infra.outputs.was_stopped == 'true' }}
+    runs-on: ubuntu-24.04
+    environment: aws-prod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: jcf-restore-power-${{ github.run_id }}
+      - name: Stop the host again
+        env:
+          IID: ${{ needs.infra.outputs.instance_id }}
+        run: |
+          aws ec2 stop-instances --instance-ids "$IID" >/dev/null
+          aws ec2 wait instance-stopped --instance-ids "$IID"
+          echo "host $IID stopped again" | tee -a "$GITHUB_STEP_SUMMARY"

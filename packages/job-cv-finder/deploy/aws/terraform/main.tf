@@ -463,7 +463,7 @@ resource "aws_dlm_lifecycle_policy" "data" {
 
 resource "aws_cloudwatch_metric_alarm" "status_check" {
   alarm_name          = "jcf-host-status-check-failed"
-  alarm_description   = "The jcf host failed an EC2 status check for 3 minutes."
+  alarm_description   = "The jcf host failed an EC2 status check for 3 minutes (a stopped host is not an alarm: the host is on demand)."
   namespace           = "AWS/EC2"
   metric_name         = "StatusCheckFailed"
   dimensions          = { InstanceId = aws_instance.host.id }
@@ -472,7 +472,7 @@ resource "aws_cloudwatch_metric_alarm" "status_check" {
   evaluation_periods  = 3
   threshold           = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
-  treat_missing_data  = "breaching"
+  treat_missing_data  = "notBreaching"
   alarm_actions       = [aws_sns_topic.alerts.arn]
   ok_actions          = [aws_sns_topic.alerts.arn]
   tags                = local.tags

@@ -1,6 +1,6 @@
 # AWS deployment
 
-One small always-on host, as the application was built (SQLite WAL, one core, stateless workers; ADR-0002). No RDS, no Kubernetes, no load balancer.
+One small host, **on demand (not always on)**, as the application was built (SQLite WAL, one core, stateless workers; ADR-0002). No RDS, no Kubernetes, no load balancer.
 
 ```text
 GitHub Actions (OIDC, environment aws-prod)
@@ -70,9 +70,19 @@ docker compose --env-file /opt/jcf/compose.env -f /opt/jcf/docker-compose.yml lo
 
 Logs are also in CloudWatch group `/jcf/app` (30 days).
 
+## On-demand power
+
+The host is normally **stopped**. Stopping keeps the data volume, snapshots, S3 backups and the Elastic IP; a start brings the same containers and database back (restart policy `unless-stopped`, Docker enabled at boot), and Caddy keeps its certificate.
+
+```sh
+gh workflow run jcf-power.yml --ref main -f action=status   # status | start | stop
+```
+
+`start` waits until `https://<hostname>/readyz` answers 200. While stopped, the 6-hourly backup timer and the daily snapshot of an idle volume do not produce new data; the existing backups remain. A deploy (push to `main`, or `gh workflow run job-cv-finder-deploy.yml`) starts a stopped host, deploys, verifies, and **stops it again** (job `restore-power`, which also runs if an earlier job failed). A host that was running when the deploy began is left running.
+
 ## Cost (estimates, not measured)
 
-t4g.small about US$12/month, 36 GiB of gp3 about US$3, Elastic IP (public IPv4) about US$3.6, S3 and snapshots a few cents at this data size, CloudWatch Logs small. Roughly US$19/month. The account has a US$5 monthly budget alert from the lab setup; this deployment exceeds it by design. Burstable CPU credits are set to `standard`, so a runaway process cannot bill surplus credits.
+Stopped: the 20 GiB data volume and 16 GiB root volume (gp3, about US$3), the public IPv4 address (about US$3.6; an Elastic IP bills whether or not it is attached), snapshots and S3 backups (cents). Roughly **US$7/month idle**. Running adds the t4g.small, about US$12/month, billed per second. To remove the address charge as well, release the Elastic IP and re-create the DNS record on the next start (not done: it would change the IP on every start).
 
 ## Known gaps
 

@@ -29,7 +29,7 @@ Then configure Ruxt (`NUXT_JOB_AUTOMATION_URL/TOKEN/OWNER`) and open `/jobs`. Se
 
 ## Deploying to AWS
 
-One `t4g.small` host (Caddy, core, worker), SQLite on a separate encrypted volume, S3 and snapshot backups, deployed by GitHub Actions through OIDC. Start at `docs/ops/AWS_DEPLOYMENT.md`; recovery in `docs/ops/BACKUP_ROLLBACK_RECOVERY.md`; what is and is not verified in `docs/testing/EVIDENCE.md` and `docs/ops/KNOWN_LIMITATIONS.md`.
+One on-demand `t4g.small` host (stopped by default; `gh workflow run jcf-power.yml -f action=start|stop|status`; Caddy, core, worker), SQLite on a separate encrypted volume, S3 and snapshot backups, deployed by GitHub Actions through OIDC. Start at `docs/ops/AWS_DEPLOYMENT.md`; recovery in `docs/ops/BACKUP_ROLLBACK_RECOVERY.md`; what is and is not verified in `docs/testing/EVIDENCE.md` and `docs/ops/KNOWN_LIMITATIONS.md`.
 
 ## Tests
 
