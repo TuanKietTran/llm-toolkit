@@ -404,10 +404,12 @@ resource "aws_instance" "host" {
     volume_size = var.root_volume_gib
     volume_type = "gp3"
     encrypted   = true
-    tags        = merge(local.tags, { Name = "jcf-root" })
   }
 
-  tags = merge(local.tags, { Name = "jcf-host" })
+  # Applied at instance-creation time (RunInstances tag specification for the volume); the deploy role
+  # only allows creating volumes that carry Project=jcf at that moment.
+  volume_tags = merge(local.tags, { Name = "jcf-root" })
+  tags        = merge(local.tags, { Name = "jcf-host" })
 
   lifecycle {
     # The AMI alias moves forward over time and user data is applied on first boot only;
