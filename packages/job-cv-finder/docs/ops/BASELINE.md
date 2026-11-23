@@ -23,7 +23,7 @@ Checkpoint taken before the AWS deployment work. "Verified" means observed direc
 | Trust policy subject `repo:TuanKietTran/llm-toolkit:environment:aws-prod` | From the template; the first workflow run assumes the role through that subject (see `docs/ops/JOURNAL.md`) |
 | Policies `jcf-boundary`, `jcf-deploy-ec2`, `jcf-deploy-platform`, `jcf-deploy-iam-guard` | Defined in the template; actual effective permissions are exercised by Terraform plan and apply in CI |
 | GitHub environment `aws-prod` absent | Confirmed absent (404), created in this session |
-| Eight `lab-deploy-*` roles vs four in the local template | **Resolved by inspection.** The account has eight: `double-entry-ledger-go`, `event-archive`, `fraud-detection-go`, `hiring-platform`, `loan-platform-go`, `payment-orchestration-go`, `payment-reconciler`, `portfolio-tracker-go`. The live `lab-bootstrap` stack covers the five Go fintech repos plus three others, while `D:\aws-lab-plan\bootstrap\lab-bootstrap.cfn.yaml` still lists four repos. The local file is stale; no lab resource was touched |
+| Eight `lab-deploy-*` roles vs four in the local template | **Resolved by inspection.** The account has eight: `double-entry-ledger-go`, `event-archive`, `fraud-detection-go`, `hiring-platform`, `loan-platform-go`, `payment-orchestration-go`, `payment-reconciler`, `portfolio-tracker-go`. The live `lab-bootstrap` stack covers the five Go fintech repos plus three others, while the lab template kept outside this repository still lists four repos. That local copy is stale; no lab resource was touched |
 | Roles in the account | 15: six service-linked, `jcf-deploy-llm-toolkit`, eight `lab-deploy-*` |
 
 ## DNS
