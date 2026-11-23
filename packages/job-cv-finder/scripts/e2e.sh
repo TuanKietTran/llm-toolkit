@@ -33,7 +33,7 @@ for _ in $(seq 1 50); do curl -fsS "$API/readyz" >/dev/null 2>&1 && break; sleep
 call() { curl -fsS -H "Authorization: Bearer $JCF_API_TOKEN" -H 'Content-Type: application/json' "$@"; }
 
 echo "== start Python worker"
-(cd "$HERE/intel" && uv sync -q && JCF_CORE_URL="$API" exec .venv/Scripts/python -m jcf_intel 2>"$WORK/worker.log" || JCF_CORE_URL="$API" exec .venv/bin/python -m jcf_intel 2>"$WORK/worker.log") & PIDS+=($!)
+(cd "$HERE/intel" && uv sync -q && { PY=.venv/bin/python; [ -x "$PY" ] || PY=.venv/Scripts/python; JCF_CORE_URL="$API" exec "$PY" -m jcf_intel 2>"$WORK/worker.log"; }) & PIDS+=($!)
 
 echo "== candidate snapshot from Ruxt (fixture), credential, discovery"
 call -X POST "$API/api/v1/candidate/snapshots" --data-binary @"$HERE/scripts/fixtures/snapshot.json" >/dev/null
