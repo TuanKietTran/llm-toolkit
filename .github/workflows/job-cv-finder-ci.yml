@@ -8,7 +8,7 @@ on:
       - "packages/job-cv-finder/**"
       - ".github/workflows/job-cv-finder-*.yml"
   push:
-    branches-ignore: [main]
+    branches-ignore: [main, feat/job-cv-finder-aws]
     paths:
       - "packages/job-cv-finder/**"
       - ".github/workflows/job-cv-finder-*.yml"

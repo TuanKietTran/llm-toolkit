@@ -5,7 +5,7 @@ name: job-cv-finder deploy (AWS)
 # Credentials come from GitHub OIDC; there are no long-lived AWS keys.
 on:
   push:
-    branches: [main]
+    branches: [main, feat/job-cv-finder-aws] # bring-up branch; removed when merged to main
     paths:
       - "packages/job-cv-finder/**"
       - ".github/workflows/job-cv-finder-*.yml"
