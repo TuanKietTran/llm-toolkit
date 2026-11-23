@@ -27,6 +27,10 @@ cd ../intel && uv sync && JCF_WORKER_TOKEN=... uv run python -m jcf_intel
 
 Then configure Ruxt (`NUXT_JOB_AUTOMATION_URL/TOKEN/OWNER`) and open `/jobs`. See `docs/architecture/DEPLOYMENT.md`.
 
+## Deploying to AWS
+
+One `t4g.small` host (Caddy, core, worker), SQLite on a separate encrypted volume, S3 and snapshot backups, deployed by GitHub Actions through OIDC. Start at `docs/ops/AWS_DEPLOYMENT.md`; recovery in `docs/ops/BACKUP_ROLLBACK_RECOVERY.md`; what is and is not verified in `docs/testing/EVIDENCE.md` and `docs/ops/KNOWN_LIMITATIONS.md`.
+
 ## Tests
 
 ```sh
@@ -65,3 +69,5 @@ Status values follow the brief: implemented and tested; implemented but not full
 | Retention pruning job | Not implemented | Manual SQL in the runbook |
 | Postgres backend | Not implemented | SQLite by decision (ADR-0002) |
 | Deployment docs, runbook, security docs | Written | `docs/` |
+| AWS deployment (Terraform, containers, Caddy/HTTPS, backups, CI/CD) | Implemented and verified in production | `docs/testing/EVIDENCE.md`; deployed host passes HTTPS, auth, backup/restore and restart-persistence checks |
+| Production Ruxt using the AWS core | Not done | Ruxt still points at the previous core; cut-over procedure in `docs/ops/RUNBOOK.md` |

@@ -61,3 +61,13 @@ This is not yet scheduled automatically (see the status table in README).
 - `JCF_API_TOKEN`: update the core and `NUXT_JOB_AUTOMATION_TOKEN` together, then restart both.
 - `JCF_WORKER_TOKEN`: update the core and the workers.
 - `JCF_SECRET_KEY`: credentials are bound to the key id. After rotation, re-enter each credential in Platform accounts.
+
+## Cut Ruxt over to the AWS core
+
+Do this only when the owner has decided the AWS core replaces the current instance (the current one keeps its own database; nothing is migrated automatically).
+
+1. Confirm the AWS core: `curl -fsS https://jcf-aws.mashallow.cloud/readyz` and an authenticated `GET /api/v1/integration/health` with the token held in the `aws-prod` environment secret `JCF_API_TOKEN`.
+2. In the Ruxt repository set the three secrets its deploy workflow writes to the Worker: `NUXT_JOB_AUTOMATION_URL=https://jcf-aws.mashallow.cloud`, `NUXT_JOB_AUTOMATION_TOKEN=<same value as JCF_API_TOKEN>`, `NUXT_JOB_AUTOMATION_OWNER` unchanged. Pipe the token from its private file instead of typing it: `gh secret set NUXT_JOB_AUTOMATION_TOKEN -R <owner>/ruxt < <token file>`.
+3. Run the Ruxt deploy (a `v*` tag or a manual dispatch on `main`); its deploy job writes the secrets with `wrangler secret put`.
+4. Open `/jobs`, send a snapshot from CV workspace, run discovery from Job sources.
+5. Roll back by restoring the previous URL and token in the same three secrets and redeploying. The previous core and its database are untouched by the cut-over.

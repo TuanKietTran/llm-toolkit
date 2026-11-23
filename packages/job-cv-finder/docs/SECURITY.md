@@ -42,3 +42,14 @@ Enforced in code and policy (ADR-0005; `docs/sources/SOURCES.md`):
 - TLS between Ruxt and the core is the deployment's responsibility (terminate at a reverse proxy).
 - There is no per-request rate limit on the core API; it binds to localhost by default.
 - `SECURITY` review of the Ruxt proxy by a second reviewer is pending.
+
+## AWS deployment
+
+- **Identity**: GitHub OIDC only, one role, one subject (the immutable repository subject plus environment `aws-prod`), no access keys. The role carries a permissions boundary for any role it creates, cannot edit itself, cannot create users or keys, cannot create larger instances, NAT gateways, load balancers, databases or KMS keys, and is denied outside `us-east-1`.
+- **Network**: security group allows 80 and 443 only; no SSH. Management is SSM only. IMDSv2 is required.
+- **Edge**: Caddy terminates TLS; `/metrics` and the worker API `/internal/*` are not reachable from the internet. The public API requires the bearer token. The worker receives only its own token; the API token and the credential key stay in the core container.
+- **Secrets**: SSM SecureString parameters under `/jcf/env/`, written into root-only env files on the host at deploy time and never printed. The API token enters through a GitHub environment secret. Terraform state holds the generated worker token and credential key; the state bucket is encrypted and reachable only by the deploy role and the account owner.
+- **Data**: SQLite on a separate encrypted EBS volume, S3 backups (versioned, SSE-S3, TLS-only, public access blocked), daily snapshots.
+- **Supply chain**: third-party GitHub Actions pinned to commit SHAs, images pinned by base tag, Python dependencies pinned with hashes, Trivy and `govulncheck` and `pip-audit` in CI.
+- **Public repository note**: workflow logs are public. The deploy role ARN (which contains the account id) appears in them as a workflow input; the account id is not a credential. No token or key is ever echoed.
+

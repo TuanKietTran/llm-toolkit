@@ -1,5 +1,7 @@
 # Deployment
 
+The AWS deployment (one host, Caddy, SQLite on its own volume, GitHub Actions through OIDC) is described in `docs/ops/AWS_DEPLOYMENT.md`. This page covers processes and configuration in general.
+
 ## Processes
 
 | Process | Command | Notes |
