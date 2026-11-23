@@ -67,6 +67,8 @@ resource "aws_cloudwatch_log_group" "app" {
   tags              = local.tags
 }
 
+# trivy:ignore:AWS-0095 -- CloudWatch cannot publish to a topic encrypted with the AWS-managed key and the
+# deploy role cannot create customer-managed keys; the topic only carries alarm state, no personal data.
 resource "aws_sns_topic" "alerts" {
   name = "jcf-alerts"
   tags = local.tags
@@ -104,6 +106,7 @@ resource "aws_s3_bucket_versioning" "backup" {
   }
 }
 
+# trivy:ignore:AWS-0132 -- SSE-S3 (AES256) on purpose: the deploy role cannot create customer-managed KMS keys.
 resource "aws_s3_bucket_server_side_encryption_configuration" "backup" {
   bucket = aws_s3_bucket.backup.id
   rule {
@@ -314,6 +317,8 @@ resource "aws_iam_role_policy" "dlm" {
 }
 
 # ----------------------------------------------------------------------------- network
+# trivy:ignore:AWS-0104 -- the host must reach ECR, SSM, S3, Let's Encrypt and arbitrary public job boards, so
+# outbound cannot be limited to a fixed CIDR list. Inbound is limited to 80/443.
 resource "aws_security_group" "host" {
   name        = "jcf-host"
   description = "Job CV Finder host: HTTP and HTTPS only. No SSH, management is through SSM."

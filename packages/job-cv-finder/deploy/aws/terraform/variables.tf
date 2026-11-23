@@ -6,7 +6,7 @@ variable "region" {
 variable "hostname" {
   description = "Public hostname Caddy serves and requests a certificate for."
   type        = string
-  default     = "jcf.mashallow.cloud"
+  default     = "jcf-aws.mashallow.cloud"
 }
 
 variable "instance_type" {
