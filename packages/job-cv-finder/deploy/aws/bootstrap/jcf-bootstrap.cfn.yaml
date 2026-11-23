@@ -14,6 +14,14 @@ Parameters:
     Type: String
     Default: llm-toolkit
     AllowedPattern: '^[A-Za-z0-9._-]{1,100}$'
+  GitHubSubjectPrefix:
+    Type: String
+    Default: ''
+    AllowedPattern: '^(|repo:[A-Za-z0-9@._/-]{1,200})$'
+    Description: >-
+      Repository part of the GitHub OIDC subject. Empty means repo:<owner>/<repo>. Repositories with immutable
+      subjects enabled (GET /repos/<owner>/<repo>/actions/oidc/customization/sub, sub_claim_prefix) emit
+      repo:<owner>@<owner id>/<repo>@<repo id> instead; pass that value here.
   EnvironmentName:
     Type: String
     Default: aws-prod
@@ -35,6 +43,7 @@ Parameters:
     Description: Largest EBS volume the deploy role may create (cost guard).
 
 Conditions:
+  HasSubjectPrefix: !Not [!Equals [!Ref GitHubSubjectPrefix, '']]
   HasStateBucketOverride: !Not [!Equals [!Ref LabStateBucketName, '']]
 
 Resources:
@@ -553,7 +562,10 @@ Resources:
             Condition:
               StringEquals:
                 'token.actions.githubusercontent.com:aud': sts.amazonaws.com
-                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${EnvironmentName}'
+                'token.actions.githubusercontent.com:sub': !If
+                  - HasSubjectPrefix
+                  - !Sub '${GitHubSubjectPrefix}:environment:${EnvironmentName}'
+                  - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${EnvironmentName}'
       ManagedPolicyArns: [!Ref PolicyEc2, !Ref PolicyPlatform, !Ref PolicyIamGuard]
       Policies:
         - PolicyName: terraform-state
@@ -590,4 +602,7 @@ Outputs:
     Value: !Ref BoundaryPolicy
   TrustedSubject:
     Description: The only OIDC subject allowed to assume the deploy role.
-    Value: !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${EnvironmentName}'
+    Value: !If
+      - HasSubjectPrefix
+      - !Sub '${GitHubSubjectPrefix}:environment:${EnvironmentName}'
+      - !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${EnvironmentName}'
