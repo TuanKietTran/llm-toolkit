@@ -1,0 +1,593 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Job CV Finder deploy identity. One GitHub Actions deploy role for the llm-toolkit repository
+  (through the account's existing GitHub OIDC provider), a permissions boundary for the roles
+  Terraform creates, and three deploy policies scoped to jcf-* names and Project=jcf tags.
+  No IAM users, no access keys. Does not touch the lab-bootstrap stack.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: TuanKietTran
+    AllowedPattern: '^[A-Za-z0-9-]{1,39}$'
+  GitHubRepo:
+    Type: String
+    Default: llm-toolkit
+    AllowedPattern: '^[A-Za-z0-9._-]{1,100}$'
+  EnvironmentName:
+    Type: String
+    Default: aws-prod
+    AllowedPattern: '^[A-Za-z0-9_-]{1,40}$'
+    Description: GitHub environment. The role trust requires this exact environment, so a run only gets credentials after its required reviewer approves.
+  NamePrefix:
+    Type: String
+    Default: jcf
+    AllowedPattern: '^[a-z][a-z0-9]{1,8}$'
+    Description: Prefix for every resource name, for the Project tag value and for the IAM scoping below. Keep it jcf unless you change the Terraform too.
+  LabStateBucketName:
+    Type: String
+    Default: ''
+    Description: Existing Terraform state bucket created by lab-bootstrap. Empty means lab-tfstate-<account>-<region>. Only the llm-toolkit/ prefix is used.
+  MaxVolumeGiB:
+    Type: String
+    Default: '50'
+    AllowedPattern: '^([89]|[1-9][0-9]|1[0-9][0-9]|200)$'
+    Description: Largest EBS volume the deploy role may create (cost guard).
+
+Conditions:
+  HasStateBucketOverride: !Not [!Equals [!Ref LabStateBucketName, '']]
+
+Resources:
+  # ------------------------------------------------------------------ Permissions boundary
+  # Upper limit for every role Terraform creates (the instance role and the snapshot-policy role).
+  BoundaryPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${NamePrefix}-boundary'
+      Description: Upper limit for roles created by the jcf deploy role.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SsmAgent
+            Effect: Allow
+            Action:
+              - ssm:UpdateInstanceInformation
+              - ssm:DescribeAssociation
+              - ssm:GetDocument
+              - ssm:ListAssociations
+              - ssm:ListInstanceAssociations
+              - ssm:GetDeployablePatchSnapshotForInstance
+              - ssm:UpdateAssociationStatus
+              - ssm:UpdateInstanceAssociationStatus
+              - ssm:PutInventory
+              - ssmmessages:CreateControlChannel
+              - ssmmessages:CreateDataChannel
+              - ssmmessages:OpenControlChannel
+              - ssmmessages:OpenDataChannel
+              - ec2messages:AcknowledgeMessage
+              - ec2messages:DeleteMessage
+              - ec2messages:FailMessage
+              - ec2messages:GetEndpoint
+              - ec2messages:GetMessages
+              - ec2messages:SendReply
+            Resource: '*'
+          - Sid: ReadOwnParameters
+            Effect: Allow
+            Action: [ssm:GetParameter, ssm:GetParameters, ssm:GetParametersByPath]
+            Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${NamePrefix}/*'
+          - Sid: DecryptParametersViaSsm
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+            Condition:
+              StringEquals:
+                'kms:ViaService': !Sub 'ssm.${AWS::Region}.amazonaws.com'
+          - Sid: EcrLogin
+            Effect: Allow
+            Action: ecr:GetAuthorizationToken
+            Resource: '*'
+          - Sid: EcrPull
+            Effect: Allow
+            Action: [ecr:BatchCheckLayerAvailability, ecr:GetDownloadUrlForLayer, ecr:BatchGetImage]
+            Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${NamePrefix}-*'
+          - Sid: Logs
+            Effect: Allow
+            Action: [logs:CreateLogStream, logs:PutLogEvents, logs:DescribeLogStreams]
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${NamePrefix}/*'
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${NamePrefix}/*:*'
+          - Sid: Metrics
+            Effect: Allow
+            Action: cloudwatch:PutMetricData
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'cloudwatch:namespace': !Ref NamePrefix
+          - Sid: BackupsWriteAndRestoreNeverDelete
+            Effect: Allow
+            Action: [s3:PutObject, s3:GetObject, s3:AbortMultipartUpload]
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${NamePrefix}-backup-*/*'
+          - Sid: BackupsList
+            Effect: Allow
+            Action: [s3:ListBucket, s3:GetBucketLocation]
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${NamePrefix}-backup-*'
+          - Sid: SnapshotPolicyOnTaggedVolumes
+            Effect: Allow
+            Action: [ec2:CreateSnapshot, ec2:CreateSnapshots]
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*'
+            Condition:
+              StringEquals:
+                'ec2:ResourceTag/Project': !Ref NamePrefix
+          - Sid: SnapshotPolicyNewSnapshots
+            Effect: Allow
+            Action: [ec2:CreateSnapshot, ec2:CreateSnapshots]
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*'
+          - Sid: SnapshotPolicyTagAndPrune
+            Effect: Allow
+            Action: [ec2:CreateTags, ec2:DeleteSnapshot]
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}::snapshot/*'
+          - Sid: SnapshotPolicyDescribe
+            Effect: Allow
+            Action: [ec2:DescribeInstances, ec2:DescribeVolumes, ec2:DescribeSnapshots]
+            Resource: '*'
+
+  # ------------------------------------------------------------------ Deploy policy 1: EC2 and snapshots
+  PolicyEc2:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${NamePrefix}-deploy-ec2'
+      Description: One small instance, one data volume, one Elastic IP and one security group, all tagged Project=jcf.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Describe
+            Effect: Allow
+            Action: ['ec2:Describe*']
+            Resource: '*'
+          - Sid: RunTaggedSmallInstance
+            Effect: Allow
+            Action: ec2:RunInstances
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*'
+            Condition:
+              StringEquals:
+                'aws:RequestTag/Project': !Ref NamePrefix
+                'ec2:InstanceType': [t4g.micro, t4g.small]
+          - Sid: RunTaggedCappedVolume
+            Effect: Allow
+            Action: ec2:RunInstances
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*'
+            Condition:
+              StringEquals:
+                'aws:RequestTag/Project': !Ref NamePrefix
+              NumericLessThanEquals:
+                'ec2:VolumeSize': !Ref MaxVolumeGiB
+          - Sid: RunSupportingResources
+            Effect: Allow
+            Action: ec2:RunInstances
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*'
+              - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*'
+              - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/*'
+              - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}::image/*'
+          - Sid: CreateDataVolume
+            Effect: Allow
+            Action: ec2:CreateVolume
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/*'
+            Condition:
+              StringEquals:
+                'aws:RequestTag/Project': !Ref NamePrefix
+              NumericLessThanEquals:
+                'ec2:VolumeSize': !Ref MaxVolumeGiB
+          - Sid: CreateSecurityGroupInVpc
+            Effect: Allow
+            Action: ec2:CreateSecurityGroup
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc/*'
+          - Sid: CreateTaggedSecurityGroup
+            Effect: Allow
+            Action: ec2:CreateSecurityGroup
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/*'
+            Condition:
+              StringEquals:
+                'aws:RequestTag/Project': !Ref NamePrefix
+          - Sid: AllocateTaggedElasticIp
+            Effect: Allow
+            Action: ec2:AllocateAddress
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/*'
+            Condition:
+              StringEquals:
+                'aws:RequestTag/Project': !Ref NamePrefix
+          - Sid: TagOnCreateOnly
+            Effect: Allow
+            Action: ec2:CreateTags
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*'
+            Condition:
+              StringEquals:
+                'ec2:CreateAction': [RunInstances, CreateVolume, CreateSecurityGroup, AllocateAddress]
+          - Sid: ChangeAndDeleteTaggedResources
+            Effect: Allow
+            Action:
+              - ec2:TerminateInstances
+              - ec2:StopInstances
+              - ec2:StartInstances
+              - ec2:RebootInstances
+              - ec2:ModifyInstanceAttribute
+              - ec2:ModifyInstanceMetadataOptions
+              - ec2:AttachVolume
+              - ec2:DetachVolume
+              - ec2:DeleteVolume
+              - ec2:ModifyVolume
+              - ec2:DeleteSecurityGroup
+              - ec2:AuthorizeSecurityGroupIngress
+              - ec2:AuthorizeSecurityGroupEgress
+              - ec2:RevokeSecurityGroupIngress
+              - ec2:RevokeSecurityGroupEgress
+              - ec2:ModifySecurityGroupRules
+              - ec2:UpdateSecurityGroupRuleDescriptionsIngress
+              - ec2:UpdateSecurityGroupRuleDescriptionsEgress
+              - ec2:AssociateAddress
+              - ec2:DisassociateAddress
+              - ec2:ReleaseAddress
+              - ec2:AssociateIamInstanceProfile
+              - ec2:DisassociateIamInstanceProfile
+              - ec2:ReplaceIamInstanceProfileAssociation
+              - ec2:DeleteTags
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:*/*'
+            Condition:
+              StringEquals:
+                'ec2:ResourceTag/Project': !Ref NamePrefix
+          - Sid: SnapshotLifecyclePolicy
+            Effect: Allow
+            Action:
+              - dlm:CreateLifecyclePolicy
+              - dlm:UpdateLifecyclePolicy
+              - dlm:DeleteLifecyclePolicy
+              - dlm:GetLifecyclePolicy
+              - dlm:GetLifecyclePolicies
+              - dlm:TagResource
+              - dlm:UntagResource
+              - dlm:ListTagsForResource
+            Resource: '*'
+
+  # ------------------------------------------------------------------ Deploy policy 2: platform services
+  PolicyPlatform:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${NamePrefix}-deploy-platform'
+      Description: Registry, logs, alarms, alert topic, backup bucket (no object delete), parameters and Run Command for jcf-named resources.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EcrLogin
+            Effect: Allow
+            Action: ecr:GetAuthorizationToken
+            Resource: '*'
+          - Sid: EcrRepositories
+            Effect: Allow
+            Action:
+              - ecr:CreateRepository
+              - ecr:DeleteRepository
+              - ecr:DescribeRepositories
+              - ecr:ListTagsForResource
+              - ecr:TagResource
+              - ecr:UntagResource
+              - ecr:PutLifecyclePolicy
+              - ecr:GetLifecyclePolicy
+              - ecr:DeleteLifecyclePolicy
+              - ecr:GetRepositoryPolicy
+              - ecr:PutImageScanningConfiguration
+              - ecr:PutImageTagMutability
+              - ecr:BatchCheckLayerAvailability
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+              - ecr:InitiateLayerUpload
+              - ecr:UploadLayerPart
+              - ecr:CompleteLayerUpload
+              - ecr:PutImage
+              - ecr:DescribeImages
+              - ecr:ListImages
+              - ecr:DescribeImageScanFindings
+              - ecr:StartImageScan
+            Resource: !Sub 'arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${NamePrefix}-*'
+          - Sid: LogGroups
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:DeleteLogGroup
+              - logs:PutRetentionPolicy
+              - logs:TagResource
+              - logs:UntagResource
+              - logs:ListTagsForResource
+              - logs:ListTagsLogGroup
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${NamePrefix}/*'
+              - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${NamePrefix}/*:*'
+          - Sid: DescribeLogGroupsAndAlarms
+            Effect: Allow
+            Action: [logs:DescribeLogGroups, cloudwatch:DescribeAlarms]
+            Resource: '*'
+          - Sid: Alarms
+            Effect: Allow
+            Action:
+              - cloudwatch:PutMetricAlarm
+              - cloudwatch:DeleteAlarms
+              - cloudwatch:TagResource
+              - cloudwatch:UntagResource
+              - cloudwatch:ListTagsForResource
+            Resource: !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${NamePrefix}-*'
+          - Sid: AlertTopic
+            Effect: Allow
+            Action:
+              - sns:CreateTopic
+              - sns:DeleteTopic
+              - sns:GetTopicAttributes
+              - sns:SetTopicAttributes
+              - sns:Subscribe
+              - sns:Unsubscribe
+              - sns:GetSubscriptionAttributes
+              - sns:ListSubscriptionsByTopic
+              - sns:TagResource
+              - sns:UntagResource
+              - sns:ListTagsForResource
+            Resource: !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${NamePrefix}-*'
+          - Sid: BackupBucketConfiguration
+            Effect: Allow
+            Action:
+              - s3:CreateBucket
+              - s3:DeleteBucket
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:GetBucket*
+              - s3:GetEncryptionConfiguration
+              - s3:GetLifecycleConfiguration
+              - s3:GetAccelerateConfiguration
+              - s3:GetReplicationConfiguration
+              - s3:PutBucketTagging
+              - s3:PutBucketVersioning
+              - s3:PutEncryptionConfiguration
+              - s3:PutBucketPublicAccessBlock
+              - s3:PutLifecycleConfiguration
+              - s3:PutBucketOwnershipControls
+              - s3:PutBucketPolicy
+              - s3:DeleteBucketPolicy
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${NamePrefix}-backup-*'
+          - Sid: ParametersUnderPrefix
+            Effect: Allow
+            Action:
+              - ssm:PutParameter
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+              - ssm:DeleteParameter
+              - ssm:DeleteParameters
+              - ssm:AddTagsToResource
+              - ssm:RemoveTagsFromResource
+              - ssm:ListTagsForResource
+            Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${NamePrefix}/*'
+          - Sid: DescribeParametersAndInstances
+            Effect: Allow
+            Action:
+              - ssm:DescribeParameters
+              - ssm:DescribeInstanceInformation
+              - ssm:DescribeInstanceProperties
+              - ssm:ListCommands
+              - ssm:ListCommandInvocations
+              - ssm:GetCommandInvocation
+            Resource: '*'
+          - Sid: ReadPublicAmiAlias
+            Effect: Allow
+            Action: ssm:GetParameter
+            Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}::parameter/aws/service/ami-amazon-linux-latest/*'
+          - Sid: RunCommandDocument
+            Effect: Allow
+            Action: ssm:SendCommand
+            Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript'
+          - Sid: RunCommandOnTaggedInstances
+            Effect: Allow
+            Action: ssm:SendCommand
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*'
+            Condition:
+              StringEquals:
+                'ssm:resourceTag/Project': !Ref NamePrefix
+          - Sid: CancelCommands
+            Effect: Allow
+            Action: ssm:CancelCommand
+            Resource: '*'
+          - Sid: ParameterEncryptionViaSsm
+            Effect: Allow
+            Action: [kms:Encrypt, kms:Decrypt, kms:GenerateDataKey]
+            Resource: !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+            Condition:
+              StringEquals:
+                'kms:ViaService': !Sub 'ssm.${AWS::Region}.amazonaws.com'
+
+  # ------------------------------------------------------------------ Deploy policy 3: IAM scope and explicit denies
+  PolicyIamGuard:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${NamePrefix}-deploy-iam-guard'
+      Description: Lets the deploy role create jcf-named roles only with the boundary, and denies escalation, other regions, large instances and unrelated cost-bearing services.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CreateJcfRolesOnlyWithBoundary
+            Effect: Allow
+            Action: iam:CreateRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${NamePrefix}-*'
+            Condition:
+              StringEquals:
+                'iam:PermissionsBoundary': !Ref BoundaryPolicy
+          - Sid: ManageJcfRoles
+            Effect: Allow
+            Action:
+              - iam:GetRole
+              - iam:DeleteRole
+              - iam:UpdateRole
+              - iam:UpdateRoleDescription
+              - iam:UpdateAssumeRolePolicy
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:ListRoleTags
+              - iam:PutRolePolicy
+              - iam:GetRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:ListRolePolicies
+              - iam:ListAttachedRolePolicies
+              - iam:ListInstanceProfilesForRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${NamePrefix}-*'
+          - Sid: ManageJcfInstanceProfiles
+            Effect: Allow
+            Action:
+              - iam:CreateInstanceProfile
+              - iam:DeleteInstanceProfile
+              - iam:GetInstanceProfile
+              - iam:AddRoleToInstanceProfile
+              - iam:RemoveRoleFromInstanceProfile
+              - iam:TagInstanceProfile
+              - iam:UntagInstanceProfile
+              - iam:ListInstanceProfileTags
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/${NamePrefix}-*'
+          - Sid: PassJcfRolesToEc2AndDlm
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${NamePrefix}-*'
+            Condition:
+              StringEquals:
+                'iam:PassedToService': [ec2.amazonaws.com, dlm.amazonaws.com]
+          - Sid: ReadBoundary
+            Effect: Allow
+            Action: [iam:GetPolicy, iam:GetPolicyVersion]
+            Resource: !Ref BoundaryPolicy
+          - Sid: DenyEditingDeployRolesAndPolicies
+            Effect: Deny
+            Action:
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:UpdateAssumeRolePolicy
+              - iam:UpdateRole
+              - iam:DeleteRole
+              - iam:TagRole
+              - iam:UntagRole
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${NamePrefix}-deploy-*'
+          - Sid: DenyEditingJcfPolicies
+            Effect: Deny
+            Action:
+              - iam:CreatePolicyVersion
+              - iam:DeletePolicy
+              - iam:DeletePolicyVersion
+              - iam:SetDefaultPolicyVersion
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/${NamePrefix}-*'
+          - Sid: DenyBoundaryChangesAndAttachments
+            Effect: Deny
+            Action:
+              - iam:PutRolePermissionsBoundary
+              - iam:DeleteRolePermissionsBoundary
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+            Resource: '*'
+          - Sid: DenyIdentityAndEscalationPrimitives
+            Effect: Deny
+            Action:
+              - iam:CreateUser
+              - iam:CreateAccessKey
+              - iam:CreateLoginProfile
+              - iam:UpdateLoginProfile
+              - iam:AttachUserPolicy
+              - iam:PutUserPolicy
+              - iam:CreateServiceSpecificCredential
+              - iam:CreateOpenIDConnectProvider
+              - iam:UpdateOpenIDConnectProviderThumbprint
+              - iam:CreateSAMLProvider
+            Resource: '*'
+          - Sid: DenyLargerInstanceTypes
+            Effect: Deny
+            Action: ec2:RunInstances
+            Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*'
+            Condition:
+              StringNotEquals:
+                'ec2:InstanceType': [t4g.micro, t4g.small]
+          - Sid: DenyUnrelatedCostBearingServices
+            Effect: Deny
+            Action:
+              - ec2:CreateNatGateway
+              - ec2:CreateVpcEndpoint
+              - ec2:CreateVpc
+              - ec2:CreateTransitGateway
+              - ec2:CreateVpnGateway
+              - rds:CreateDBInstance
+              - rds:CreateDBCluster
+              - elasticloadbalancing:CreateLoadBalancer
+              - ecs:CreateCluster
+              - ecs:CreateService
+              - ecs:RunTask
+              - eks:CreateCluster
+              - elasticache:CreateCacheCluster
+              - elasticache:CreateReplicationGroup
+              - redshift:CreateCluster
+              - es:CreateDomain
+              - kms:CreateKey
+            Resource: '*'
+          - Sid: DenyOtherRegions
+            Effect: Deny
+            NotAction: [iam:*, sts:*, support:*, budgets:*, ce:*]
+            Resource: '*'
+            Condition:
+              StringNotEquals:
+                'aws:RequestedRegion': !Ref 'AWS::Region'
+
+  # ------------------------------------------------------------------ Deploy role (GitHub Actions, OIDC)
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${NamePrefix}-deploy-${GitHubRepo}'
+      Description: GitHub Actions deploy role for Job CV Finder (llm-toolkit). Assumable only from the approved GitHub environment.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com'
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+                'token.actions.githubusercontent.com:sub': !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${EnvironmentName}'
+      ManagedPolicyArns: [!Ref PolicyEc2, !Ref PolicyPlatform, !Ref PolicyIamGuard]
+      Policies:
+        - PolicyName: terraform-state
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: StateObjects
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource: !If
+                  - HasStateBucketOverride
+                  - !Sub 'arn:${AWS::Partition}:s3:::${LabStateBucketName}/${GitHubRepo}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::lab-tfstate-${AWS::AccountId}-${AWS::Region}/${GitHubRepo}/*'
+              - Sid: StateList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !If
+                  - HasStateBucketOverride
+                  - !Sub 'arn:${AWS::Partition}:s3:::${LabStateBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::lab-tfstate-${AWS::AccountId}-${AWS::Region}'
+                Condition:
+                  StringLike:
+                    's3:prefix': [!Sub '${GitHubRepo}/*', !Ref GitHubRepo]
+      Tags:
+        - {Key: Project, Value: !Ref NamePrefix}
+        - {Key: repo, Value: !Ref GitHubRepo}
+
+Outputs:
+  DeployRoleArn:
+    Description: Set as variable AWS_ROLE_ARN in the GitHub environment (not a secret).
+    Value: !GetAtt DeployRole.Arn
+  BoundaryPolicyArn:
+    Description: Permissions boundary that every Terraform-created jcf role must carry (variable permissions_boundary_arn).
+    Value: !Ref BoundaryPolicy
+  TrustedSubject:
+    Description: The only OIDC subject allowed to assume the deploy role.
+    Value: !Sub 'repo:${GitHubOwner}/${GitHubRepo}:environment:${EnvironmentName}'
